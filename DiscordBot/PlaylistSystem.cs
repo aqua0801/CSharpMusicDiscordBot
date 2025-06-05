@@ -2,6 +2,7 @@
 using Discord.Audio;
 using Discord.WebSocket;
 using Microsoft.VisualBasic;
+using Newtonsoft.Json.Linq;
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
@@ -11,6 +12,7 @@ using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading.Tasks;
+using YoutubeExplode.Playlists;
 
 namespace DiscordBot
 {
@@ -34,6 +36,47 @@ namespace DiscordBot
         {
             _playlists.TryRemove(guildId, out _);
         }
+
+        public static async Task LoopCheckVoiceChannelAndUsers()
+        {
+            await Task.Run(async () =>
+            {
+                Timer loopCheckTimer = new Timer(async _ =>
+                {
+                    try
+                    {
+                        ulong[] ids = PlaylistSystem._playlists.Keys.ToArray();
+
+                        foreach (ulong id in ids)
+                        {
+                            Playlist playlist = PlaylistSystem._playlists[id];
+                            if (playlist._vc == null || playlist._vc.ConnectionState != ConnectionState.Connected)
+                            {
+                                await playlist.Finish();
+                            }
+                            else
+                            {
+                                if (playlist._svc != null && playlist._svc.ConnectedUsers.Where(user => !user.IsBot).Count() < 1)
+                                {
+                                    await playlist._message.Channel.SendMessageAsync($"{GlobalVariable.botNickname}偵測到語音裡沒有人，我要退出苦來西苦！");
+                                    await playlist.Finish();
+                                    await Utils.DisconnectFromSVC(playlist._svc);
+                                }
+                                
+                            }
+                        }
+                    }
+                    catch (Exception e)
+                    {
+                        Console.WriteLine($"[Erro][LoopCheck] {e}");
+                    }
+
+                }, null, TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5));
+
+                GlobalVariable.PermanentTimers.Add(loopCheckTimer);
+            });
+
+        }
     }
 
     public class Playlist
@@ -46,13 +89,14 @@ namespace DiscordBot
         internal bool _repeat = false;
         internal bool _interrupt = false;
 
+        internal SocketVoiceChannel _svc;
         internal SocketInteraction _interaction;
         internal BufferedAudioStream _currentBufferedAudio;
         internal IUserMessage _message;
         internal Timer? _updateTimer;
         internal DateTime _startTime;
         internal DateTime _pauseTime;
-        internal AudioProcess.AudioInfo? _currentTrack;
+        internal MediaProcess.AudioInfo? _currentTrack;
         internal AudioOutStream? _discordStream;
         internal Process? _ffmpeg;
         internal CancellationTokenSource _cts = new CancellationTokenSource();
@@ -61,6 +105,8 @@ namespace DiscordBot
         {
             this._guild = guild;
             this._vc = vc;
+            var guildBot = this._guild.GetUser(GlobalVariable.botID);
+            this._svc = guildBot.VoiceChannel;
         }
 
         public void AddUrls(List<Tuple<WebOption, string>> urls)
@@ -74,6 +120,7 @@ namespace DiscordBot
             this._interrupt = false;
             this._interaction = interaction;
             this.CreateDiscordStream();
+
 
             await this.PlayTrackAsync(interaction);
 
@@ -100,7 +147,7 @@ namespace DiscordBot
             }
 
             var url = this._urls[this._playingIndex];
-            var urlAlgorithm = AudioProcess.DetermineAudioUrlAlgorithm(url.Item1);
+            var urlAlgorithm = MediaProcess.DetermineAudioUrlAlgorithm(url.Item1);
 
             var audioInfo = await urlAlgorithm(url.Item2);
             this._currentTrack = audioInfo;
@@ -111,7 +158,7 @@ namespace DiscordBot
                 return;
             }
 
-            var ffmpeg = await AudioProcess.CreateStreamAsync(audioInfo);
+            var ffmpeg = await MediaProcess.CreateStreamAsync(audioInfo);
 
             if (ffmpeg == null)
             {
@@ -181,10 +228,13 @@ namespace DiscordBot
             }
         }
 
-        private string BuildProgressBar(TimeSpan current, TimeSpan total, int barLength = 50)
+        private string BuildProgressBar(TimeSpan current, TimeSpan total, int barLength = 40)
         {
             if (total.TotalSeconds <= 0)
                 return "[?]";
+
+            if (current > total && current != TimeSpan.Zero && total != TimeSpan.Zero)
+                current = total;
 
             double progress = Math.Clamp(current.TotalSeconds / total.TotalSeconds, 0, 1);
             int filledLength = (int)Math.Min(barLength - 1, barLength * progress);
@@ -205,7 +255,7 @@ namespace DiscordBot
             return builder.Build();
         }
 
-        private async Task Finish()
+        public async Task Finish()
         {
             this._interrupt = true;
             this._updateTimer?.Dispose();
@@ -303,6 +353,138 @@ namespace DiscordBot
                 await component.DeferAsync();
             }
         }
+
+    }
+
+    public class ConcurrentPlaylistSystem
+    {
+        private ConcurrentDictionary<ulong, ConcurrentDictionary<string, string>> _playlist = new ConcurrentDictionary<ulong, ConcurrentDictionary<string, string>>();
+        private object _lock = new object();
+        private string _path;
+        private bool _isChanged = false;
+
+        public ConcurrentPlaylistSystem(string jsonFilePath , bool enableLoopCheck)
+        {
+            this._path = jsonFilePath;
+            this.Read();
+            if (enableLoopCheck)
+                this.LoopCheckAndWrite();
+        }
+        public void Read()
+        {        
+            lock (this._lock)
+            {
+                var jobj = Json.Read(this._path);
+                this._playlist = ConcurrentPlaylistSystem.JObjectToConcurrentDict(jobj);
+            }
+        }
+        public void Write()
+        {
+            lock (this._lock)
+            {
+                var jobj = ConcurrentPlaylistSystem.ConcurrentDictToJObject(this._playlist);
+                Json.Write(jobj,this._path);
+            }
+        }
+        /// <summary>
+        /// Add only , cannot update . To update ,delete and add
+        /// </summary>
+        public void AddOrCreate(ulong serverID, string name, string url)
+        {
+            var dict = _playlist.GetOrAdd(serverID, _ => new ConcurrentDictionary<string, string>());
+            if (dict.TryAdd(name, url))
+                this._isChanged = true;
+        }
+
+        public void Remove(ulong serverID, string name)
+        {
+            if (this._playlist.TryGetValue(serverID, out var dict))
+            {
+                if (dict.TryRemove(name, out _))
+                    this._isChanged = true;
+            }
+        }
+        public Dictionary<string,string> GetPlaylists(ulong serverID)
+        {
+            if (!this.Exist(serverID))
+                return new Dictionary<string, string>();
+            return this._playlist[serverID]
+                .ToDictionary();
+        }
+
+
+        public bool Exist(ulong serverID , string name)
+        {
+            if (!this._playlist.ContainsKey(serverID)) return false;
+            return this._playlist[serverID].ContainsKey(name);
+        }
+        public bool Exist(ulong serverID)
+        {
+            return this._playlist.ContainsKey(serverID);
+        }
+
+        private void LoopCheckAndWrite()
+        {
+            Task.Run(() =>
+            {
+                Timer t = new Timer((e) =>
+                {
+                    if (this._isChanged)
+                    {
+                        this._isChanged = false;
+                        this.Write();
+                    }
+                },null,10*1000,10*1000);
+                GlobalVariable.PermanentTimers.Add(t);
+            });
+
+        }
+
+
+        private static JObject ConcurrentDictToJObject(ConcurrentDictionary<ulong, ConcurrentDictionary<string, string>> source)
+        {
+            var result = new JObject();
+
+            foreach (var (guildId, playlistDict) in source)
+            {
+                var guildObject = new JObject();
+
+                foreach (var (playlistName, url) in playlistDict)
+                {
+                    guildObject[playlistName] = url;
+                }
+
+                result[guildId.ToString()] = guildObject;
+            }
+
+            return result;
+        }
+
+        private static ConcurrentDictionary<ulong, ConcurrentDictionary<string, string>> JObjectToConcurrentDict(JObject jObject)
+        {
+            var result = new ConcurrentDictionary<ulong, ConcurrentDictionary<string, string>>();
+
+            foreach (var guildProperty in jObject.Properties())
+            {
+                if (ulong.TryParse(guildProperty.Name, out ulong guildId))
+                {
+                    var playlists = new ConcurrentDictionary<string, string>();
+
+                    if (guildProperty.Value is JObject playlistObj)
+                    {
+                        foreach (var playlistProp in playlistObj.Properties())
+                        {
+                            playlists[playlistProp.Name] = playlistProp.Value?.ToString() ?? string.Empty;
+                        }
+
+                        result[guildId] = playlists;
+                    }
+                }
+            }
+
+            return result;
+        }
+
     }
 
 }

@@ -1,6 +1,7 @@
 ﻿using DiscordBot;
 using Newtonsoft.Json.Linq;
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -15,7 +16,7 @@ namespace DiscordBot
         public class JWriter
         {
             private bool blnWriting = false;
-            private Queue<Tuple<string, string>> JsonWriteQueue = new Queue<Tuple<string, string>>();
+            private ConcurrentQueue<Tuple<string, string>> JsonWriteQueue = new ConcurrentQueue<Tuple<string, string>>();
 
 
             public void Append(string FilePath, string JsonString)
@@ -34,8 +35,10 @@ namespace DiscordBot
                 {
                     for (int index = 0; index < this.JsonWriteQueue.Count(); index++)
                     {
-                        var WriteQueue = this.JsonWriteQueue.Dequeue();
-                        File.WriteAllText(WriteQueue.Item1, WriteQueue.Item2);
+                        if(this.JsonWriteQueue.TryDequeue(out var WriteQueue))
+                        {
+                            File.WriteAllText(WriteQueue.Item1, WriteQueue.Item2);
+                        }
                     }
                 }
                 this.blnWriting = false;

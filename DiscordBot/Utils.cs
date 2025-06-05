@@ -1,6 +1,9 @@
 ﻿using Discord;
 using Discord.Commands;
 using Discord.Interactions;
+using Discord.WebSocket;
+using Newtonsoft.Json.Linq;
+using System.Collections.Concurrent;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Threading.Tasks;
@@ -77,18 +80,59 @@ namespace DiscordBot
 
                 await botVoice.DisconnectAsync(); 
                 var audioClient = await userVoice.ConnectAsync();
-                GlobalVariable.ServerAudioClientMap[intctx.Guild.Id] = audioClient;
+                GlobalVariable.serverAudioClientMap[intctx.Guild.Id] = audioClient;
                 return 1;
             }
 
             if (userVoice != null)
             {
                 var audioClient = await userVoice.ConnectAsync();
-                GlobalVariable.ServerAudioClientMap[intctx.Guild.Id] = audioClient;
+                GlobalVariable.serverAudioClientMap[intctx.Guild.Id] = audioClient;
                 return 2;
             }
 
             return -1;
+        }
+
+        public static async Task DisconnectFromSVC(SocketVoiceChannel svc)
+        {
+            if (svc == null)
+                return;
+            await svc.DisconnectAsync();
+        }
+
+        public static string GenerateHashCode(int length)
+        {
+            const string chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+            var random = new Random();
+            return new string(Enumerable.Repeat(chars, length)
+                .Select(s => s[random.Next(s.Length)]).ToArray());
+        }
+
+        public static double LevenshteinSimilarity(string s1, string s2)
+        {
+            int len1 = s1.Length;
+            int len2 = s2.Length;
+            int[,] dp = new int[len1 + 1, len2 + 1];
+
+            for (int i = 0; i <= len1; i++) dp[i, 0] = i;
+            for (int j = 0; j <= len2; j++) dp[0, j] = j;
+
+            for (int i = 1; i <= len1; i++)
+            {
+                for (int j = 1; j <= len2; j++)
+                {
+                    int cost = (s1[i - 1] == s2[j - 1]) ? 0 : 1;
+                    dp[i, j] = Math.Min(
+                        Math.Min(dp[i - 1, j] + 1, dp[i, j - 1] + 1),
+                        dp[i - 1, j - 1] + cost
+                    );
+                }
+            }
+
+            int distance = dp[len1, len2];
+            int maxLen = Math.Max(len1, len2);
+            return maxLen == 0 ? 1.0 : 1.0 - (double)distance / maxLen;
         }
 
         public static void Swap<T>(ref T t1 , ref T t2)
@@ -149,6 +193,25 @@ namespace DiscordBot
                 int swapIndex = Utils.RandInt(0,i+1);
                 (lst[i], lst[swapIndex]) = (lst[swapIndex], lst[i]);
             }
+        }
+    }
+
+    public class ThreadAffinityHelper
+    {
+        [DllImport("kernel32.dll")]
+        private static extern IntPtr GetCurrentThread();
+
+        [DllImport("kernel32.dll")]
+        private static extern UIntPtr SetThreadAffinityMask(IntPtr hThread, UIntPtr dwThreadAffinityMask);
+
+        public static void SetAffinity(int coreIndex)
+        {
+            if (coreIndex < 0 || coreIndex >= Environment.ProcessorCount)
+                throw new ArgumentOutOfRangeException(nameof(coreIndex));
+
+            IntPtr handle = GetCurrentThread();
+            UIntPtr mask = (UIntPtr)(1 << coreIndex); // 1 << n gives bitmask for CPU n
+            SetThreadAffinityMask(handle, mask);
         }
     }
 }

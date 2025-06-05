@@ -17,7 +17,7 @@ namespace DiscordBot
     public  class BilibiliDownloader
     {
         private readonly HttpClient _httpClient;
-        private readonly string _downloadPath = ".\\Download\\";
+        private readonly string _downloadPath = GlobalVariable.downloadFolderPath;
         private readonly string[] _supportedExtensions = { "mp3", "mp4" };
         private readonly int _retryLimit = 2;
         private readonly HttpClientHandler _handler;
@@ -41,16 +41,14 @@ namespace DiscordBot
             };
             return agents[new Random().Next(agents.Length)];
         }
-        public async Task<string?> DownloadAsync(string url, string extension)
+        public async Task<string?> DownloadAsync(string url, ExtensionOption extension)
         {
-            if (!_supportedExtensions.Contains(extension)) return null;
-
-            if (extension == "mp3")
+            if (extension == ExtensionOption.Audio)
             {
                 var result = await DownloadFileAsync(url, "mp3");
                 return result == "not found" ? null : Path.Combine(_downloadPath, result);
             }
-            else if (extension == "mp4")
+            else if (extension == ExtensionOption.Video)
             {
                 var videoResult = await DownloadFileAsync(url, "mp4");
                 var audioResult = await DownloadFileAsync(url, "mp3");
@@ -76,15 +74,15 @@ namespace DiscordBot
             return null;
         }
 
-        public async Task<AudioProcess.AudioInfo?> GetBilibililStreamUrlAsync(string url)
+        public async Task<MediaProcess.AudioInfo?> GetBilibililStreamUrlAsync(string url)
         {
             var (fileUrl, title) = await GetFileUrlAsync(url, "mp3");
-            var durationTimespan = await AudioProcess.GetAudioDurationAsync(fileUrl);
+            var durationTimespan = await MediaProcess.GetAudioDurationAsync(fileUrl);
             float duraion = 0f;
             if (durationTimespan != null)
                 duraion = (float)durationTimespan.Value.TotalSeconds;
 
-            return new AudioProcess.AudioInfo()
+            return new MediaProcess.AudioInfo()
             {
                 Title = title,
                 Creator = "Bilibili創作者解析懶得寫",
