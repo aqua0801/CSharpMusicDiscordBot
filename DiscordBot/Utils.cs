@@ -1,4 +1,5 @@
-﻿using Discord;
+﻿using AngleSharp.Dom;
+using Discord;
 using Discord.Commands;
 using Discord.Interactions;
 using Discord.WebSocket;
@@ -109,6 +110,24 @@ namespace DiscordBot
                 .Select(s => s[random.Next(s.Length)]).ToArray());
         }
 
+        public static double HybridScoreSimilarity(string input, string target)
+        {
+            input = input.ToLowerInvariant();
+            target = target.ToLowerInvariant();
+
+            double confidence = 0d;
+
+            if (target.StartsWith(input))
+                confidence += 1.0d + (double)(input.Length) / target.Length;
+
+            int index = target.IndexOf(input);
+            if (index != -1)
+                confidence += Math.Max(0d , 0.8d - (index * 0.01d));
+
+            return 0.5d * confidence + Utils.LevenshteinSimilarity(input,target);
+        }
+
+
         public static double LevenshteinSimilarity(string s1, string s2)
         {
             int len1 = s1.Length;
@@ -182,6 +201,91 @@ namespace DiscordBot
         }
 
     }
+
+    public struct Pair<T1,T2>
+    {
+        public T1 Item1 { get; set;}
+        public T2 Item2 { get; set; }
+
+        public object this[int idx]
+        {
+            get
+            {
+                return idx switch
+                {
+                    0 => Item1!,
+                    1 => Item2!,
+                    _ => throw new IndexOutOfRangeException("Pair index must be 0 or 1")
+                };
+            }
+            set
+            {
+                switch (idx)
+                {
+                    case 0:
+                        Item1 = (T1)value;
+                        break;
+                    case 1:
+                        Item2 = (T2)value;
+                        break;
+                    default:
+                        throw new IndexOutOfRangeException("Pair index must be 0 or 1");
+                }
+            }
+        }
+    }
+
+    public class RefPair<T1,T2>
+    {
+        private Pair<T1,T2> _pair;
+
+        public RefPair(T1 t1 , T2 t2)
+        {
+            this._pair.Item1 = t1;
+            this._pair.Item2 = t2;
+        }
+
+        public T1 Item1
+        {
+            get => _pair.Item1;
+            set => _pair.Item1 = value;
+        }
+
+        public T2 Item2
+        {
+            get => _pair.Item2;
+            set => _pair.Item2 = value;
+        }
+
+        public object this[int idx]
+        {
+            get
+            {
+                return idx switch
+                {
+                    0 => this._pair.Item1!,
+                    1 => this._pair.Item2!,
+                    _ => throw new IndexOutOfRangeException("Pair index must be 0 or 1")
+                };
+            }
+            set
+            {
+                switch (idx)
+                {
+                    case 0:
+                        this._pair.Item1 = (T1)value;
+                        break;
+                    case 1:
+                        this._pair.Item2 = (T2)value;
+                        break;
+                    default:
+                        throw new IndexOutOfRangeException("Pair index must be 0 or 1");
+                }
+            }
+        }
+    }
+
+
 
     public static class Extensions
     {

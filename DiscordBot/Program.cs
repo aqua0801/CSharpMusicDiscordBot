@@ -22,6 +22,7 @@ var client = new DiscordSocketClient(config);
 var commands = new CommandService();
 var interactions = new InteractionService(client.Rest);
 client.ButtonExecuted += ButtonHelper.OnComponentExecuted;
+bool firstTimeReady = true;
 
 var services = new ServiceCollection()
     .AddSingleton(client)
@@ -47,16 +48,36 @@ async Task GetBotInfo()
     GlobalVariable.creatorID = application.Owner.Id;
 }
 
+void LoopSetGameAsync()
+{
+    Timer t = new Timer(async _ =>
+    {
+        await client.SetGameAsync($"{GlobalVariable.botNickname}在{DateTime.Now:HH:mm}撿了{Utils.RandInt(0, 9999)}個石頭！",type:ActivityType.CustomStatus);
+    }, null, TimeSpan.FromSeconds(1), TimeSpan.FromMinutes(1));
+    GlobalVariable.PermanentTimers.Add(t);
+}
+
 client.Log += LogAsync;
 commands.Log += LogAsync;
 interactions.Log += LogAsync;
 
 client.Ready += async () =>
 {
-    Console.WriteLine($"目前登入 : {client.CurrentUser.Username}#{client.CurrentUser.Discriminator}");
-    await GetBotInfo();
-    await GlobalVariable.genshinService.LoopCheckGenshinResin(client,190,TimeSpan.FromMinutes(30));
-    await PlaylistSystem.LoopCheckVoiceChannelAndUsers();
+    if (firstTimeReady)
+    {
+        Console.WriteLine($"正在初始化參數與自檢測方法...");
+        await GetBotInfo();
+        await GlobalVariable.genshinService.LoopCheckGenshinResin(client, 190, TimeSpan.FromMinutes(30));
+        await PlaylistSystem.LoopCheckVoiceChannelAndUsers();
+        ImageAlgorithm.LoopCheckExpiredCache();
+        LoopSetGameAsync();
+        firstTimeReady = false;
+        Console.WriteLine($"目前登入 : {client.CurrentUser.Username}#{client.CurrentUser.Discriminator}");
+    }
+    else
+    {
+        Console.WriteLine($"重新登入 : {client.CurrentUser.Username}#{client.CurrentUser.Discriminator}");
+    }
 };
 
 client.MessageReceived += async (messageParam) =>

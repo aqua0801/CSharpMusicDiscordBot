@@ -59,7 +59,7 @@ namespace DiscordBot
         }
 
  
-        public static async Task<Func<string,ExtensionOption, Task<string?>>> DetermineDownloadVideoAlgorithm(WebOption web )
+        public static Func<string,ExtensionOption, Task<string?>> DetermineDownloadVideoAlgorithm(WebOption web )
         {
             if (web == WebOption.Youtube) 
             {

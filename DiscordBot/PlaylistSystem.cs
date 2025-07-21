@@ -219,12 +219,19 @@ namespace DiscordBot
         {
             if (_message != null)
             {
-                await _message.ModifyAsync(msg =>
+                try
                 {
-                    msg.Embed = this.BuildTrackEmbed();
-                    msg.Components = ButtonHelper.CreateView(this);
-                    msg.Flags = MessageFlags.SuppressNotification;
-                });
+                    await _message.ModifyAsync(msg =>
+                    {
+                        msg.Embed = this.BuildTrackEmbed();
+                        msg.Components = ButtonHelper.CreateView(this);
+                        msg.Flags = MessageFlags.SuppressNotification;
+                    });
+                }
+                catch(Exception e)
+                {
+                    Console.WriteLine($"[Error] Encounter error when updating message !{Environment.NewLine}{e}");
+                }
             }
         }
 

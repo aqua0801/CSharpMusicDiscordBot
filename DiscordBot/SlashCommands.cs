@@ -142,7 +142,29 @@ namespace DiscordBot
                     return;
                 }
 
-                await MediaProcess.PlayAudioByUrlAndRespond(Context.Interaction , url , audioClient , display , MediaProcess.DetermineAudioUrlAlgorithm(WebOption.Youtube));
+
+                var playlist = PlaylistSystem.GetorCreatePlaylist(Context.Guild, audioClient);
+                bool firstTrack = playlist._urls.Count == 0;
+
+                var urlTupleList = new List<Tuple<WebOption, string>>()
+                {
+                    Tuple.Create(WebOption.Youtube,url)
+                };
+
+                playlist.AddUrls(urlTupleList);
+
+                if (firstTrack)
+                {
+                    await FollowupAsync($"{GlobalVariable.botNickname}激情開唱！", ephemeral: eph);
+                    await playlist.StartAsync(Context.Interaction);
+                }
+                else
+                {
+                    await FollowupAsync($"成功插入1首歌！", ephemeral: eph);
+                }
+
+
+                //await MediaProcess.PlayAudioByUrlAndRespond(Context.Interaction , url , audioClient , display , MediaProcess.DetermineAudioUrlAlgorithm(WebOption.Youtube));
             }
         }
 
@@ -445,33 +467,34 @@ namespace DiscordBot
             bool eph = SlashCommands.ToEphemeral(display);
             await DeferAsync(ephemeral:eph);
 
-            var downloadAlgorithm = await MediaProcess.DetermineDownloadVideoAlgorithm(web);
-
             try
             {
-                string? fullFilePath = await downloadAlgorithm(url,extension);
-               
-                if (fullFilePath == null)
+                await Task.Run(async () =>
                 {
-                    Console.WriteLine(fullFilePath);
-                    await FollowupAsync($"嗚嗚嗚{GlobalVariable.botNickname}下載失敗！");
-                }
-                else
-                {
-                    string filename = Path.GetFileName(fullFilePath);
+                    var downloadAlgorithm =  MediaProcess.DetermineDownloadVideoAlgorithm(web);
+                    string? fullFilePath = await downloadAlgorithm(url, extension);
 
-                    if (File.Exists(fullFilePath))
+                    //Console.WriteLine($"[Log] Download completes , output path : {fullFilePath}");
+
+                    if (fullFilePath == null)
                     {
-                        try
-                        {
-                            await FollowupWithFileAsync( new FileAttachment(path: fullFilePath , fileName: filename) , text: $"{GlobalVariable.botNickname}下載成功！");
-                        }
-                        catch (HttpException ex) when (ex.Message.Contains("Request entity too large", StringComparison.OrdinalIgnoreCase))
-                        {
-                            await FollowupAsync("檔案過大，ffmpeg + ffprobe 壓縮中...", ephemeral:eph);
+                        Console.WriteLine(fullFilePath);
+                        await FollowupAsync($"嗚嗚嗚{GlobalVariable.botNickname}下載失敗！");
+                    }
+                    else
+                    {
+                        string filename = Path.GetFileName(fullFilePath);
 
-                            await Task.Run(async () =>
+                        if (File.Exists(fullFilePath))
+                        {
+                            try
                             {
+                                await FollowupWithFileAsync(new FileAttachment(path: fullFilePath, fileName: filename), text: $"{GlobalVariable.botNickname}下載成功！");
+                            }
+                            catch (HttpException ex) when (ex.Message.Contains("Request entity too large", StringComparison.OrdinalIgnoreCase))
+                            {
+                                await FollowupAsync("檔案過大，ffmpeg + ffprobe 壓縮中...", ephemeral: eph);
+                   
                                 try
                                 {
                                     string Compressed = $"compressed{filename}";
@@ -484,20 +507,21 @@ namespace DiscordBot
                                     Console.WriteLine(e);
                                     await FollowupAsync($"嗚嗚嗚{GlobalVariable.botNickname}壓縮失敗！");
                                 }
-                            });
-                         
+
+                            }
+                            catch (Exception e)
+                            {
+                                Console.WriteLine(e);
+                                await FollowupAsync("傳送時發生未知錯誤！", ephemeral: eph);
+                            }
                         }
-                        catch(Exception e)
+                        else
                         {
-                            Console.WriteLine(e);
-                            await FollowupAsync("傳送時發生未知錯誤！", ephemeral: eph);
+                            await FollowupAsync($"疑 {GlobalVariable.botNickname}下載完找不到檔案？！");
                         }
                     }
-                    else
-                    {
-                        await FollowupAsync($"疑 {GlobalVariable.botNickname}下載完找不到檔案？！");
-                    }
-                }
+
+                });
             }
             catch
             {
@@ -522,7 +546,7 @@ namespace DiscordBot
             }
             else
             {
-                string path = ImageAlgorithm.SearchImage(query)
+                string path = ImageAlgorithm.SearchImage(query , maxResultCount : 1 , acceptsCachedResult : true)
                     .First()
                     .Path;
                 await FollowupWithFileAsync(path);

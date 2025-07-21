@@ -21,11 +21,10 @@ namespace DiscordBot
     }
     public class ImageAlgorithm
     {
-        private ConcurrentDictionary<string,Tuple<string,TimeSpan>> _cachedQueryResult = new ConcurrentDictionary<string, Tuple<string, TimeSpan>>();
         internal class LabelDecoder
         {
             private const float _mainWeight = 1.8f;
-            private const float _characWeight = 1.3f;
+            private const float _characWeight = 1.5f;
             private const float _sideWeight = 1.0f;
             private const float _equalWeight = 1.0f;
             public static (float,string) ToConfidence(JObject jobj,string query)
@@ -41,7 +40,7 @@ namespace DiscordBot
                     foreach(string tag in tags)
                     {
                         float _weight = weight;
-                        double _confidence = Utils.LevenshteinSimilarity(query,tag);
+                        double _confidence = Utils.HybridScoreSimilarity(query,tag);
                         if (query == tag) _weight += LabelDecoder._equalWeight;
                         _sum += _weight * _confidence;
                     }
@@ -72,12 +71,20 @@ namespace DiscordBot
                 return cmp;
             }
         }
+
         private const string _imagesPath = GlobalVariable.imagesFolderPath;
         private const string _labelsPath = GlobalVariable.labelsFolderPath;
+        private static TimeSpan _cacheExpiredTimeSpan = TimeSpan.FromSeconds(5);
+        private static ConcurrentDictionary<string, RefPair<DateTime, string>> _cachedQueryResult = new ConcurrentDictionary<string, RefPair<DateTime, string>>();
 
-
-        public static List<ConfidenceResult> SearchImage(string query)
+        public static List<ConfidenceResult> SearchImage(string query , int maxResultCount = 25 , bool acceptsCachedResult = false)
         {
+            if(maxResultCount == 1 && acceptsCachedResult)
+            {
+                if (ImageAlgorithm._cachedQueryResult.TryGetValue(query, out var result))
+                    return new List<ConfidenceResult>() { new ConfidenceResult { Score = 0f, DisplayName = "", Path = result.Item2 } };
+            }
+
             var fileLists = ImageAlgorithm.PartitionFiles(new DirectoryInfo(ImageAlgorithm._labelsPath).GetFiles() ,Environment.ProcessorCount);
             List<Thread> threads = new List<Thread>();
             var heap = new SortedSet<(ConfidenceResult Item, int UniqueId)>(new HeapComparer());
@@ -104,10 +111,10 @@ namespace DiscordBot
                             Path = imagePath,
                             DisplayName = displayName
                         };
-                        if (results.Count < 25)
+                        if (results.Count < maxResultCount)
                         {
                             results.Add(result);
-                            if (results.Count == 25)
+                            if (results.Count == maxResultCount)
                                 results.Sort((r1, r2) => r2.Score.CompareTo(r1.Score)); //desc
                         }
                         else
@@ -124,7 +131,7 @@ namespace DiscordBot
                             }
                         }
                     }
-                    if (results.Count < 25)
+                    if (results.Count < maxResultCount)
                         results.Sort((r1, r2) => r2.Score.CompareTo(r1.Score)); //desc
                                                                                 //filling heap
 
@@ -133,7 +140,7 @@ namespace DiscordBot
                         for (int j = 0; j < results.Count; j++)
                         {
                             var result = results[j];
-                            if (heap.Count < 25)
+                            if (heap.Count < maxResultCount)
                             {
                                 int id = Interlocked.Increment(ref globalId);
                                 heap.Add((result, id++));
@@ -195,6 +202,22 @@ namespace DiscordBot
             return partitions;
         }
 
+        public static void LoopCheckExpiredCache()
+        {
+            Timer t = new Timer((e) =>
+            {
+                foreach (var kv in ImageAlgorithm._cachedQueryResult)
+                {
+                    if (DateTime.Now - kv.Value.Item1 >= ImageAlgorithm._cacheExpiredTimeSpan)
+                    {
+                        ImageAlgorithm._cachedQueryResult.TryRemove(kv.Key, out _);
+                    }
+                }
+            }, null, TimeSpan.FromSeconds(10), TimeSpan.FromSeconds(10));
+
+            GlobalVariable.PermanentTimers.Add(t);
+        }
+
 
         public class SearchImageAutocomplete : AutocompleteHandler
         {
@@ -206,6 +229,11 @@ namespace DiscordBot
 
                 var options = results.
                     Select(result=> new AutocompleteResult(result.DisplayName,result.Path));
+
+                if (!String.IsNullOrEmpty(current))
+                    ImageAlgorithm._cachedQueryResult.AddOrUpdate(current ,
+                        _ => new RefPair<DateTime, string> (DateTime.Now, results.First().Path) ,
+                       (k,v) => { v.Item1 = DateTime.Now; return v; } );
                 
                 return AutocompletionResult.FromSuccess(options);
             }
