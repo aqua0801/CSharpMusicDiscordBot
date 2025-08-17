@@ -533,13 +533,12 @@ namespace DiscordBot
         [SlashCommand("search","這算法我寫了三天，希望真的很強")]
         public async Task SearchImages(
               [Autocomplete(typeof(ImageAlgorithm.SearchImageAutocomplete))] string query,
-              DisplayOption display = DisplayOption.Display
-              
+              DisplayOption display = DisplayOption.Display 
             )
         {
             bool eph = SlashCommands.ToEphemeral(display);
             await DeferAsync(ephemeral:eph);
-
+            
             if (File.Exists(query))
             {
                 await FollowupWithFileAsync(query);
@@ -554,6 +553,29 @@ namespace DiscordBot
 
         }
 
+        [SlashCommand("聊天", "cuda加速真的好快")]
+        public async Task ChatWithBot(
+              [Summary("內容")] string prompt,
+              DisplayOption display = DisplayOption.Display
+            )
+        {
+            bool eph = SlashCommands.ToEphemeral(display);
+            await DeferAsync(ephemeral: eph);
+
+            _ = Task.Run(async () =>
+            {
+                string response = LanguageModelCore.GetModelResponse(prompt , Context.Channel.Id);
+                await FollowupAsync (response,ephemeral:eph);
+            });
+        }
+
+        [SlashCommand("清空聊天紀錄", "當這逼機器人開始亂回話的時候")]
+        public async Task ClearChatHistory()
+        {
+            await DeferAsync();
+            LanguageModelCore.ClearChatHistory(Context.Channel.Id);
+            await FollowupAsync("對話紀錄已清除！");
+        }
     }
 
     public class InteractionHandler

@@ -1,18 +1,5 @@
-﻿using Discord;
-using Discord.Interactions;
-using Newtonsoft.Json.Linq;
-using System;
-using System.Collections.Concurrent;
-using System.Collections.Generic;
-using System.Diagnostics;
-using System.Linq;
-using System.Security.Cryptography;
-using System.Text;
-using System.Threading.Tasks;
-
 namespace DiscordBot
 {
-
     public class ConfidenceResult
     {
         public float  Score { get; set; }
@@ -79,12 +66,12 @@ namespace DiscordBot
 
         public static List<ConfidenceResult> SearchImage(string query , int maxResultCount = 25 , bool acceptsCachedResult = false)
         {
-            if (maxResultCount == 1 && acceptsCachedResult)
+            if(maxResultCount == 1 && acceptsCachedResult)
             {
                 if (ImageAlgorithm._cachedQueryResult.TryGetValue(query, out var result))
                     return new List<ConfidenceResult>() { new ConfidenceResult { Score = 0f, DisplayName = "", Path = result.Item2 } };
             }
- 
+
             var fileLists = ImageAlgorithm.PartitionFiles(new DirectoryInfo(ImageAlgorithm._labelsPath).GetFiles() ,Environment.ProcessorCount);
             List<Thread> threads = new List<Thread>();
             var heap = new SortedSet<(ConfidenceResult Item, int UniqueId)>(new HeapComparer());
@@ -175,9 +162,6 @@ namespace DiscordBot
                 .ToList();
         }
 
-
-
-
         private static List<List<FileInfo>> PartitionFiles(FileInfo[] files, int numPartitions)
         {
             var partitions = new List<List<FileInfo>>(numPartitions);
@@ -202,41 +186,5 @@ namespace DiscordBot
             return partitions;
         }
 
-        public static void LoopCheckExpiredCache()
-        {
-            Timer t = new Timer((e) =>
-            {
-                foreach (var kv in ImageAlgorithm._cachedQueryResult)
-                {
-                    if (DateTime.Now - kv.Value.Item1 >= ImageAlgorithm._cacheExpiredTimeSpan)
-                    {
-                        ImageAlgorithm._cachedQueryResult.TryRemove(kv.Key, out _);
-                    }
-                }
-            }, null, TimeSpan.FromSeconds(10), TimeSpan.FromSeconds(10));
-
-            GlobalVariable.PermanentTimers.Add(t);
-        }
-
-
-        public class SearchImageAutocomplete : AutocompleteHandler
-        {
-            public override async Task<AutocompletionResult> GenerateSuggestionsAsync(IInteractionContext context, IAutocompleteInteraction autocompleteInteraction, IParameterInfo parameter, IServiceProvider services)
-            {
-                string current = autocompleteInteraction.Data.Current.Value.ToString();
-    
-                var results = ImageAlgorithm.SearchImage(current);
-
-                var options = results.
-                    Select(result=> new AutocompleteResult(result.DisplayName,result.Path));
-
-                if (!String.IsNullOrEmpty(current))
-                    ImageAlgorithm._cachedQueryResult.AddOrUpdate(current ,
-                        _ => new RefPair<DateTime, string> (DateTime.Now, results.First().Path) ,
-                       (k,v) => { v.Item1 = DateTime.Now; return v; } );
-                
-                return AutocompletionResult.FromSuccess(options);
-            }
-        }
     }
 }

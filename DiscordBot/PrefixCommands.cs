@@ -2,6 +2,7 @@
 using Discord;
 using System.Threading.Tasks;
 using Discord.Interactions;
+using DiscordBot;
 
 public class PrefixCommands : ModuleBase<SocketCommandContext>
 {
@@ -34,11 +35,13 @@ public class PrefixCommands : ModuleBase<SocketCommandContext>
         }
     }
 
+
     [Command("sync")]
     public async Task SyncCommands()
     {
         await _interactionService.RegisterCommandsGloballyAsync(true);
         Console.WriteLine($"Slash commands registered , command count : {_interactionService.SlashCommands.Count} !");
     }
+
 
 }
