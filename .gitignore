@@ -5,6 +5,8 @@ obj/
 *.user
 *.suo
 
+/update.bat
+
 # Rider / JetBrains
 .idea/
 

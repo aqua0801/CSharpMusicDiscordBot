@@ -4,6 +4,7 @@ using Discord.Commands;
 using Discord.Interactions;
 using Discord.WebSocket;
 using Newtonsoft.Json.Linq;
+using System;
 using System.Collections.Concurrent;
 using System.Linq;
 using System.Runtime.InteropServices;
@@ -127,6 +128,12 @@ namespace DiscordBot
             return 0.5d * confidence + Utils.LevenshteinSimilarity(input,target);
         }
 
+
+        public static T GetRandomEnumValue<T>() where T : Enum
+        {
+            var values = Enum.GetValues(typeof(T));
+            return  (T)values.GetValue(randSeed.Next(values.Length));
+        }
 
         public static double LevenshteinSimilarity(string s1, string s2)
         {

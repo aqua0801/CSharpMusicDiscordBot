@@ -2,15 +2,19 @@
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using System;
+using System.Buffers.Text;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using System.Net.Http;
 using System.Net.Http.Headers;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
+using UserAgentGenerator;
 
 namespace DiscordBot
 {
@@ -18,7 +22,7 @@ namespace DiscordBot
     {
         private readonly HttpClient _httpClient;
         private readonly string _downloadPath = GlobalVariable.downloadFolderPath;
-        private readonly string[] _supportedExtensions = { "mp3", "mp4" };
+        //private readonly string[] _supportedExtensions = { "mp3", "mp4" };
         private readonly int _retryLimit = 2;
         private readonly HttpClientHandler _handler;
 
@@ -29,18 +33,34 @@ namespace DiscordBot
                 AutomaticDecompression = System.Net.DecompressionMethods.GZip | System.Net.DecompressionMethods.Deflate
             };
             this._httpClient = new HttpClient(this._handler);
-            this._httpClient.DefaultRequestHeaders.UserAgent.ParseAdd(this.GetRandomUserAgent());
+            this.RefreshUserAgent();
             this._httpClient.DefaultRequestHeaders.Referrer = new Uri("https://www.bilibili.com");
         }
 
         private string GetRandomUserAgent()
         {
-            var agents = new[] {
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/112.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 Safari/537.36",
-            };
-            return agents[new Random().Next(agents.Length)];
+            //fixed user agent 
+            //var agents = new[] {
+            //"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/112.0.0.0 Safari/537.36",
+            //"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 Safari/537.36",
+            //};
+            //return agents[new Random().Next(agents.Length)];
+            return UserAgent.Generate(UserAgentGenerator.Browser.Chrome,UserAgentGenerator.Platform.Desktop);
         }
+
+        private void RefreshUserAgent()
+        {
+            this._httpClient.DefaultRequestHeaders.UserAgent.Clear();
+            while (!this._httpClient.DefaultRequestHeaders.UserAgent.TryParseAdd(this.GetRandomUserAgent())) ;
+        }
+
+        private string GetCurrentUserAgent()
+        {
+            var userAgentValues = this._httpClient.DefaultRequestHeaders.UserAgent;
+            return string.Join(" ", userAgentValues.Select(ua => ua.ToString()));
+        }
+
+
         public async Task<string?> DownloadAsync(string url, ExtensionOption extension)
         {
             if (extension == ExtensionOption.Audio)
@@ -71,9 +91,10 @@ namespace DiscordBot
 
                 var (videoUrl, title) = await this.GetFileUrlAsync(url, "mp4");
                 var (audioUrl, _) = await this.GetFileUrlAsync(url, "mp3");
+
                 string outputPath = Path.Combine(_downloadPath, $"{title}.mp4");
 
-                if (await MediaValidator.DownloadAndMergeMediaAsync(videoUrl,audioUrl,outputPath))
+                if (await MediaValidator.DownloadAndMergeMediaAsync(videoUrl,audioUrl,outputPath,MediaValidator.ConvertHttpClientToFfmpegHeaderArg(this._httpClient)))
                 {
                     return outputPath;
                 }
@@ -148,8 +169,9 @@ namespace DiscordBot
 
         private async Task<(string fileUrl, string title)> GetFileUrlAsync(string url, string extension)
         {
+            this.RefreshUserAgent();
+            string ua = this.GetCurrentUserAgent();
             var request = new HttpRequestMessage(HttpMethod.Get, url);
-            request.Headers.UserAgent.ParseAdd(GetRandomUserAgent());
             var response = await _httpClient.SendAsync(request);
  
             var html = await response.Content.ReadAsStringAsync();
@@ -168,6 +190,14 @@ namespace DiscordBot
             var vKeys = videoDash.GetKeys().Select(k => int.Parse(k));
             var aKeys = audioDash.GetKeys().Select(k => int.Parse(k));
 
+            var parserFuncs = new List<Func<JToken, string>>
+            {
+                t => t.GetValueOrDefault<string>("base_url") ,
+                t => t.GetValueOrDefault<string>("baseUrl") ,
+                t => t.GetValueOrDefault<JArray>("backup_url")[0].ToString(),
+                t => t.GetValueOrDefault<JArray>("backupUrl")[0].ToString()
+            };
+
             foreach (int key in vKeys)
             {
                 var jArr = videoDash[key];
@@ -175,35 +205,12 @@ namespace DiscordBot
                     continue;
                 var jKeys = jArr.GetKeys();
 
-                if (jKeys.Contains("base_url"))
+                foreach(var parserFunc in parserFuncs)
                 {
-                    if (await MediaValidator.IsValidMediaUrlAsync(jArr.GetValueOrDefault<string>("base_url"), "video"))
+                    string parsedUrl = parserFunc(jArr);
+                    if (await MediaValidator.IsValidMediaUrlAsync(parsedUrl , "video",  ua: ua))
                     {
-                        videoUrl = jArr.GetValueOrDefault<string>("base_url");
-                        break;
-                    }
-                }
-                if (jKeys.Contains("baseUrl"))
-                {
-                    if (await MediaValidator.IsValidMediaUrlAsync(jArr.GetValueOrDefault<string>("baseUrl"), "video"))
-                    {
-                        videoUrl = jArr.GetValueOrDefault<string>("baseUrl");
-                        break;
-                    }
-                }
-                if (jKeys.Contains("backup_url"))
-                {
-                    if (await MediaValidator.IsValidMediaUrlAsync(jArr.GetValueOrDefault<JArray>("backup_url")[0].ToString(), "video"))
-                    {
-                        videoUrl = jArr.GetValueOrDefault<JArray>("backup_url")[0].ToString();
-                        break;
-                    }
-                }
-                if (jKeys.Contains("backupUrl"))
-                {
-                    if (await MediaValidator.IsValidMediaUrlAsync(jArr.GetValueOrDefault<JArray>("backupUrl")[0].ToString(), "video"))
-                    {
-                        videoUrl = jArr.GetValueOrDefault<JArray>("backupUrl")[0].ToString();
+                        videoUrl = parsedUrl;
                         break;
                     }
                 }
@@ -215,35 +222,13 @@ namespace DiscordBot
                 if (jArr == null)
                     continue;
                 var jKeys = jArr.GetKeys();
-                if (jKeys.Contains("base_url"))
+
+                foreach (var parserFunc in parserFuncs)
                 {
-                    if (await MediaValidator.IsValidMediaUrlAsync(jArr.GetValueOrDefault<string>("base_url"), "audio"))
+                    string parsedUrl = parserFunc(jArr);
+                    if (await MediaValidator.IsValidMediaUrlAsync(parsedUrl, "audio", ua: ua))
                     {
-                        audioUrl = jArr.GetValueOrDefault<string>("base_url");
-                        break;
-                    }
-                }
-                if (jKeys.Contains("baseUrl"))
-                {
-                    if (await MediaValidator.IsValidMediaUrlAsync(jArr.GetValueOrDefault<string>("baseUrl"),  "audio"))
-                    {
-                        audioUrl = jArr.GetValueOrDefault<string>("baseUrl");
-                        break;
-                    }
-                }
-                if (jKeys.Contains("backup_url"))
-                {
-                    if (await MediaValidator.IsValidMediaUrlAsync(jArr.GetValueOrDefault<JArray>("backup_url")[0].ToString(), "audio"))
-                    {
-                        audioUrl = jArr.GetValueOrDefault<JArray>("backup_url")[0].ToString();
-                        break;
-                    }
-                }
-                if (jKeys.Contains("backupUrl"))
-                {
-                    if (await MediaValidator.IsValidMediaUrlAsync(jArr.GetValueOrDefault<JArray>("backupUrl")[0].ToString(), "audio"))
-                    {
-                        audioUrl = jArr.GetValueOrDefault<JArray>("backupUrl")[0].ToString();
+                        audioUrl = parsedUrl;
                         break;
                     }
                 }
@@ -332,17 +317,23 @@ namespace DiscordBot
     {
         private static readonly HttpClient httpClient = new HttpClient();
 
-        public static async Task<bool> IsValidMediaUrlAsync(string url , string extension)
+        public static async Task<bool> IsValidMediaUrlAsync(string url , string extension , string ua = null)
         {
             try
             {
                 var headRequest = new HttpRequestMessage(HttpMethod.Head, url);
+                if (!String.IsNullOrEmpty(ua))
+                    headRequest.Headers.UserAgent.ParseAdd(ua);
+
+                headRequest.Headers.Referrer = new Url("https://www.bilibili.com");
+
                 var headResponse = await httpClient.SendAsync(headRequest);
 
                 if (headResponse.IsSuccessStatusCode)
                 {
+                    string headerAug = ConvertHttpRequestToFfmpegHeaderArg(headRequest);
                     var contentType = headResponse.Content.Headers.ContentType?.MediaType;
-                    if (IsMediaContentType(contentType) && await IsMediaSupportedEncoding(url,extension))
+                    if (IsMediaContentType(contentType) && await IsMediaSupportedEncoding(url, extension,headerAug))
                         return true;
                 }
 
@@ -352,8 +343,9 @@ namespace DiscordBot
 
                 if (getResponse.IsSuccessStatusCode)
                 {
+                    string headerAug = ConvertHttpRequestToFfmpegHeaderArg(headRequest);
                     var contentType = getResponse.Content.Headers.ContentType?.MediaType;
-                    if (IsMediaContentType(contentType) && await IsMediaSupportedEncoding(url, extension))
+                    if (IsMediaContentType(contentType) && await IsMediaSupportedEncoding(url, extension,headerAug))
                         return true;
                 }
 
@@ -370,9 +362,9 @@ namespace DiscordBot
                    (contentType.StartsWith("video/") || contentType.StartsWith("audio/"));
         }
 
-        private static async Task<bool> IsMediaSupportedEncoding(string url , string extension)
+        private static async Task<bool> IsMediaSupportedEncoding(string url , string extension , string headerAugment)
         {
-            string encoding = await GetMediaEncoding(url,extension);
+            string encoding = await GetMediaEncoding(url,extension, headerAugment);
             if (encoding == "unsupported")
                 return false;
             return _supportedAudioCodecOptions.ContainsKey(encoding) || _supportedVideoCodecOptions.ContainsKey(encoding);
@@ -413,8 +405,7 @@ namespace DiscordBot
             { "amr-wb", "libamr_wb" }
         };
 
-
-        private static async Task<string> GetMediaEncoding(string url , string extension)
+        private static async Task<string> GetMediaEncoding(string url , string extension , string headerAugment)
         {
             extension = extension.ToLowerInvariant();
 
@@ -424,7 +415,7 @@ namespace DiscordBot
             if (extensionOption == "unsupported")
                 return extensionOption;
 
-            string augment = $"-v error -select_streams {extensionOption} -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 \"{url}\"";
+            string augment = $"-v error -select_streams {extensionOption} -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 {headerAugment} \"{url}\"";
             var processStartInfo = new ProcessStartInfo
             {
                 FileName = GlobalVariable.ffprobeExePath,
@@ -444,14 +435,55 @@ namespace DiscordBot
             await process.WaitForExitAsync();
 
             string encoding = string.IsNullOrWhiteSpace(error) ? output.Trim() : "unknown";
-            //Console.WriteLine($"Parsed source encoding : {encoding}");
+            //Console.WriteLine($"Parsed source encoding : {url}{Environment.NewLine}{encoding}");
             return encoding;
         }
 
-        public static async Task<bool> ConvertAndDownloadVideoAsync(string sourceUrl, string outputPath)
+        public static string ConvertHttpRequestToFfmpegHeaderArg(HttpRequestMessage request)
+        {
+            var sb = new StringBuilder();
+
+            foreach (var header in request.Headers)
+            {
+                string joinedValue = string.Join(", ", header.Value);
+                sb.Append($"{header.Key}: {joinedValue}\r\n");
+            }
+
+            if (request.Content != null)
+            {
+                foreach (var header in request.Content.Headers)
+                {
+                    string joinedValue = string.Join(", ", header.Value);
+                    sb.Append($"{header.Key}: {joinedValue}\r\n");
+                }
+            }
+
+            var headerAug = $"-headers \"{sb.ToString()}\"";
+            //Console.WriteLine(headerAug);
+            return headerAug;
+        }
+
+        public static string ConvertHttpClientToFfmpegHeaderArg(HttpClient client)
+        {
+            var sb = new StringBuilder();
+
+            // Headers from HttpClient.DefaultRequestHeaders
+            foreach (var header in client.DefaultRequestHeaders)
+            {
+                string joinedValue = string.Join(", ", header.Value);
+                sb.Append($"{header.Key}: {joinedValue}\r\n");
+            }
+
+            var headerArg = $"-headers \"{sb.ToString()}\"";
+            //Console.WriteLine(headerArg);
+            return headerArg;
+        }
+
+
+        public static async Task<bool> ConvertAndDownloadVideoAsync(string sourceUrl, string outputPath , string headerAugment)
         {
             var ffmpegPath = "ffmpeg";  // Path to ffmpeg executable
-            var arguments = $"-i \"{sourceUrl}\" -c:v libx264 -crf 23 -preset fast -c:a aac -b:a 192k -f mp4 \"{outputPath}\"";
+            var arguments = $"{headerAugment} -i \"{sourceUrl}\" -c:v libx264 -crf 23 -preset fast -c:a aac -b:a 192k -f mp4 \"{outputPath}\"";
 
             var processStartInfo = new ProcessStartInfo
             {
@@ -481,9 +513,9 @@ namespace DiscordBot
             }
         }
 
-        public static async Task<bool> DownloadAndMergeMediaAsync(string videoUrl, string audioUrl, string outputPath)
+        public static async Task<bool> DownloadAndMergeMediaAsync(string videoUrl, string audioUrl, string outputPath , string headerAugment = "")
         {
-            var argument = $"-y -i \"{videoUrl}\" -i \"{audioUrl}\" -c:v libx264 -crf 23 -preset fast -c:a aac -b:a 192k -f mp4 \"{outputPath}\"";
+            var argument = $"-y {headerAugment} -i \"{videoUrl}\" {headerAugment} -i \"{audioUrl}\" -c:v libx264 -crf 23 -preset fast -c:a aac -b:a 192k -f mp4 \"{outputPath}\"";
 
             var processStartInfo = new ProcessStartInfo
             {
