@@ -40,12 +40,12 @@ namespace DiscordBot
         private string GetRandomUserAgent()
         {
             //fixed user agent 
-            //var agents = new[] {
-            //"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/112.0.0.0 Safari/537.36",
-            //"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 Safari/537.36",
-            //};
-            //return agents[new Random().Next(agents.Length)];
-            return UserAgent.Generate(UserAgentGenerator.Browser.Chrome,UserAgentGenerator.Platform.Desktop);
+            var agents = new[] {
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/112.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 Safari/537.36",
+            };
+            return agents[new Random().Next(agents.Length)];
+            //return UserAgent.Generate(UserAgentGenerator.Browser.Chrome,UserAgentGenerator.Platform.Desktop);
         }
 
         private void RefreshUserAgent()
@@ -59,6 +59,7 @@ namespace DiscordBot
             var userAgentValues = this._httpClient.DefaultRequestHeaders.UserAgent;
             return string.Join(" ", userAgentValues.Select(ua => ua.ToString()));
         }
+
 
 
         public async Task<string?> DownloadAsync(string url, ExtensionOption extension)
@@ -106,8 +107,19 @@ namespace DiscordBot
 
         public async Task<MediaProcess.AudioInfo?> GetBilibililStreamUrlAsync(string url)
         {
-            var (fileUrl, title) = await GetFileUrlAsync(url, "mp3");
-            var durationTimespan = await MediaProcess.GetAudioDurationAsync(fileUrl);
+            string fileUrl = "", title = "解析錯誤";
+            TimeSpan? durationTimespan = null;
+            string header = "";
+
+            for (int i = 0; i < this._retryLimit; i++)
+            {
+                (fileUrl, title) = await GetFileUrlAsync(url, "mp3");
+                header = MediaValidator.ConvertHttpClientToFfmpegHeaderArg(this._httpClient);
+                durationTimespan = await MediaProcess.GetAudioDurationAsync(fileUrl,header);
+                if (fileUrl != "-1")
+                    break;
+            }
+
             float duraion = 0f;
             if (durationTimespan != null)
                 duraion = (float)durationTimespan.Value.TotalSeconds;
@@ -117,13 +129,15 @@ namespace DiscordBot
                 Title = title,
                 Creator = "Bilibili創作者解析懶得寫",
                 Duration = duraion,
-                Url = fileUrl
+                Url = fileUrl,
+                FfmpegHeaderAugment = header
             };
         }
 
 
         public async IAsyncEnumerable<byte[]> GetChunksAsync(string url)
         {
+
             var (fileUrl, _) = await GetFileUrlAsync(url, "mp3");
             var stream = await _httpClient.GetStreamAsync(fileUrl);
             var buffer = new byte[8192];
