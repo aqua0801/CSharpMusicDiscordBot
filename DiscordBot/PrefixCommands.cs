@@ -66,6 +66,12 @@ public class PrefixCommands : ModuleBase<SocketCommandContext>
 
     }
 
+    [Command("cache history")]
+    public async Task CacheHistory()
+    {
+        LanguageModelCore._cacheChatHistory = !LanguageModelCore._cacheChatHistory;
+        Console.WriteLine($"History cahcing is now {(LanguageModelCore._cacheChatHistory?"enabled":"disabled")} !");
+    }
 
     [Command("sync")]
     public async Task SyncCommands()

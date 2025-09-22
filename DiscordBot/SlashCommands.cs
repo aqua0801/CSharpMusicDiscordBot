@@ -12,6 +12,7 @@ using System.Diagnostics;
 using System.Linq;
 using System.Reflection;
 using System.Reflection.Metadata.Ecma335;
+using System.ServiceModel.Channels;
 using System.Text;
 using System.Threading.Tasks;
 using static DiscordBot.MediaProcess;
@@ -318,28 +319,131 @@ namespace DiscordBot
         public async Task CheckGenshinResin()
         {
             await DeferAsync();
-            var result = await GlobalVariable.genshinService.CheckGenshinResin(Context.Guild.Id,Context.User.Id);
-            
-            if(result.Item1 == CheckStatus.ServerNotFound)
+            ulong dcid = Context.User.Id;
+            try
             {
-                await FollowupAsync($"{GlobalVariable.botNickname}在世界樹找不到此伺服器的蹤跡！！");
+                var info = await GlobalVariable.hoyoLab.GetInfoAsyncByDiscordId(dcid.ToString(), GameType.Genshin);
+
+                await this.FollowupHoyolabInfo(info, "旅行者");
             }
-            else if (result.Item1 == CheckStatus.DiscordUserNotFound)
+            catch
             {
-                await FollowupAsync("世界樹沒有你的資料 莫非是降臨者！");
-            }
-            else if (result.Item1 == CheckStatus.UnknownError || result.Item3==null)
-            {
-                await FollowupAsync("小祥遇到提瓦特的力量無法參透的錯誤 原又輸！");
-            }
-            else
-            {
-                var note = result.Item3;
-                
-                await FollowupAsync($"目前體力 {note.CurrentResin}/{note.MaxResin} 預計滿體力時間{DateTime.Now + note.ResinRecoveryTime : yyyy-MM-dd HH:mm:ss}");
+                await FollowupAsync($"嗚嗚嗚{GlobalVariable.botNickname}查詢失敗 !");
             }
 
         }
+
+        [SlashCommand("崩鐵體力", $"沒人覺得DoT隊很詭異嗎")]
+        public async Task CheckHsrResin()
+        {
+            await DeferAsync();
+            ulong dcid = Context.User.Id;
+            try
+            {
+                var info = await GlobalVariable.hoyoLab.GetInfoAsyncByDiscordId(dcid.ToString(), GameType.HonkaiStarRail);
+
+                await this.FollowupHoyolabInfo(info, "開拓者");
+            }
+            catch
+            {
+                await FollowupAsync($"嗚嗚嗚{GlobalVariable.botNickname}查詢失敗 !");
+            }
+
+        }
+
+        [SlashCommand("絕區零體力", "那反舌鳥怎麼辦?")]
+        public async Task CheckZzzBattery()
+        {
+            await DeferAsync();
+            ulong dcid = Context.User.Id;
+            try
+            {
+                var info = await GlobalVariable.hoyoLab.GetInfoAsyncByDiscordId(dcid.ToString(), GameType.ZenlessZoneZero);
+
+                await this.FollowupHoyolabInfo(info, "繩匠");
+            }
+            catch
+            {
+                await FollowupAsync($"嗚嗚嗚{GlobalVariable.botNickname}查詢失敗 !");
+            }
+        }
+
+        [SlashCommand("體力總結", "查成分!")]
+        public async Task CheckAllGamesResin()
+        {
+            await DeferAsync();
+            ulong dcid = Context.User.Id;
+            try
+            {
+                var map = new[] 
+                { 
+                    (GameType.Genshin,"Genshin"),(GameType.HonkaiStarRail,"Hsr"),(GameType.ZenlessZoneZero,"Zzz")
+                };
+
+                StringFormatting.StringFormatter sf = new StringFormatting.StringFormatter(StringFormatting.StringFormatter.PadAlign.Left,100);
+                sf.PaddingSpace = 2;
+
+                foreach(var set in map)
+                {
+                    var info = await GlobalVariable.hoyoLab.GetInfoAsyncByDiscordId(dcid.ToString(),set.Item1);
+                    if (info != null && info.Status == CheckStatus.Success)
+                    {
+                        sf.AddStringTemps($"[{set.Item2}]", 0);
+                        sf.AddStringTemps($"[{info.CurrentResin}/{info.MaxResin}]", 1);
+                        sf.AddStringTemps($"[{info.MaxAt:yyyy-MM-dd HH:mm:ss}]", 2);
+                        sf.AddStringTemps($" [{info.Name}]");
+                        sf.NewLine();
+                    }
+
+                }
+
+                string infoText = sf.ToFormattedString().TrimEnd('\r', '\n');
+
+                if(infoText.Length < 1)
+                {
+                    await FollowupAsync($"{GlobalVariable.botNickname}並未收集任何資訊 !");
+                }
+                else
+                {
+                    infoText = $"```{infoText}```";
+                    await FollowupAsync($"{infoText}");
+                }
+            }
+            catch
+            {
+                await FollowupAsync($"嗚嗚嗚{GlobalVariable.botNickname}查詢失敗 !");
+            }
+        }
+
+
+        private async Task FollowupHoyolabInfo(HoyolabUserInfo info,string callname)
+        {
+            if (info != null)
+            {
+                if (info.Status == CheckStatus.Success)
+                {
+                    await FollowupAsync(
+                        $"{callname}:{info.Name}{Environment.NewLine}" +
+                        $"目前體力 : {info.CurrentResin}/{info.MaxResin}{Environment.NewLine}" +
+                        $"預計滿體力時間 : {info.MaxAt:yyyy-MM-dd HH:mm:ss}");
+                }
+                else if (info.Status == CheckStatus.UserNotFound)
+                {
+                    await FollowupAsync("你不在名單中 !");
+                }
+                else if (info.Status == CheckStatus.UserNotRegister)
+                {
+                    await FollowupAsync("你又沒玩 !");
+                }
+                else
+                    await FollowupAsync($"嗚嗚嗚{GlobalVariable.botNickname}查詢失敗 !");
+            }
+            else
+            {
+                await FollowupAsync($"嗚嗚嗚{GlobalVariable.botNickname}查詢失敗 !");
+            }
+        }
+
 
         [SlashCommand("音效板","上班摸魚寫的")]
         public async Task PlaySoundEffect(
@@ -562,10 +666,58 @@ namespace DiscordBot
             bool eph = SlashCommands.ToEphemeral(display);
             await DeferAsync(ephemeral: eph);
 
+            //_ = Task.Run(async () =>
+            //{
+            //    string response = LanguageModelCore.GetModelResponse(prompt , Context.Channel.Id);
+            //    await FollowupAsync (response,ephemeral:eph);
+            //});
             _ = Task.Run(async () =>
             {
-                string response = LanguageModelCore.GetModelResponse(prompt , Context.Channel.Id);
-                await FollowupAsync (response,ephemeral:eph);
+                const int TIMEOUT_MS = 50_000;
+                Stopwatch sw = new Stopwatch();
+                IUserMessage? msg = null;
+                var res = LanguageModelCore.GetModelResponseToken(prompt,Context.Channel.Id);
+                sw.Start();
+                while (string.IsNullOrEmpty(res.Response) && sw.ElapsedMilliseconds < TIMEOUT_MS) 
+                {
+                    if (!String.IsNullOrEmpty(res.Tokens))
+                    {
+                        if (msg == null)
+                            msg = await FollowupAsync(res.Tokens);
+                        else
+                            await msg.ModifyAsync(prop =>
+                            {
+                                prop.Content = res.Tokens;
+                            });
+                    }
+
+                    await Task.Delay(2000); 
+                }
+
+                //await FollowupAsync(res.Response);
+
+                if (msg != null)
+                {
+                    await Task.Delay(1000);
+                    if (!String.IsNullOrEmpty(res.Response))
+                    {
+                        await msg.ModifyAsync(prop =>
+                        {
+                            prop.Content = $"{res.Response}";
+                        });
+                    }
+                    else
+                    {
+                        await msg.ModifyAsync(prop =>
+                        {
+                            prop.Content = $"Response timed out after {TIMEOUT_MS / 1000}s.";
+                        });
+                    }
+
+                }
+
+
+
             });
         }
 
@@ -576,6 +728,8 @@ namespace DiscordBot
             LanguageModelCore.ClearChatHistory(Context.Channel.Id);
             await FollowupAsync("對話紀錄已清除！");
         }
+
+
     }
 
     public class InteractionHandler

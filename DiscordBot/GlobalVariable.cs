@@ -26,10 +26,10 @@ namespace DiscordBot
 
         public static ulong botID;
         public static ulong creatorID;
-        public static GenshinService genshinService = new GenshinService();
 
         public static ConcurrentPlaylistSystem concurrentPlaylist = new ConcurrentPlaylistSystem(GlobalVariable.playlistJsonFilePath,true);
         public static ConcurrentDictionary<ulong, IAudioClient> serverAudioClientMap = new ConcurrentDictionary<ulong, IAudioClient>();
+        public static HoyoLabService hoyoLab = new HoyoLabService();
      
 
         public static ConcurrentBag<Timer> PermanentTimers = new ConcurrentBag<Timer>();

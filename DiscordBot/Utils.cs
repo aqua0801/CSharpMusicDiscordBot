@@ -207,6 +207,29 @@ namespace DiscordBot
             return Nums;
         }
 
+        public static float ToFixedWidth(string text)
+        {
+            float sum = 0f;
+            foreach (char c in text)
+            {
+                if (c >= 0x4e00 && c <= 0x9fff)
+                    sum += 2f;
+                else if (char.IsLetter(c))
+                    sum += 1f;
+                else if (char.IsDigit(c))
+                    sum += 1f;
+                else if (c == '.')
+                    sum += 1f;
+                else if ("~-=.? \u00A0".Contains(c))
+                    sum += 1f;
+                else
+                    sum += 1f;
+            }
+            return sum;
+        }
+
+
+
     }
 
     public struct Pair<T1,T2>

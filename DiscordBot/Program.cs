@@ -4,6 +4,7 @@ using Discord.Interactions;
 using Discord.WebSocket;
 using DiscordBot;
 using Microsoft.Extensions.DependencyInjection;
+using StringFormatting;
 using System.Diagnostics;
 using System.IO.Compression;
 using System.Reflection;
@@ -67,9 +68,18 @@ client.Ready += async () =>
     {
         Console.WriteLine($"正在初始化參數與自檢測方法...");
         await GetBotInfo();
-        await GlobalVariable.genshinService.LoopCheckGenshinResin(client, 190, TimeSpan.FromMinutes(30));
         await PlaylistSystem.LoopCheckVoiceChannelAndUsers();
         ImageAlgorithm.LoopCheckExpiredCache();
+        _ = Task.Run(async () =>
+        {
+            var loopcheck = new HoyoLabService();
+            loopcheck.LoopCheckResin(client, 190, TimeSpan.FromMinutes(30), GameType.Genshin);
+            await Task.Delay(200);
+            loopcheck.LoopCheckResin(client, 280, TimeSpan.FromMinutes(30), GameType.HonkaiStarRail);
+            await Task.Delay(200);
+            loopcheck.LoopCheckResin(client, 225, TimeSpan.FromMinutes(30), GameType.ZenlessZoneZero);
+
+        });
         LoopSetGameAsync();
         firstTimeReady = false;
         Console.WriteLine($"目前登入 : {client.CurrentUser.Username}#{client.CurrentUser.Discriminator}");
