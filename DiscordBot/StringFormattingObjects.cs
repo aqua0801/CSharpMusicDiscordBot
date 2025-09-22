@@ -27,12 +27,12 @@ namespace StringFormatting
                 {
                     sum += 1f;  
                 }
-                // 判斷是否為數字（半角）
+
                 else if (char.IsDigit(c))
                 {
                     sum += 1f;  
                 }
-                // 處理一些常見符號
+     
                 else if (c == '.' || "~-=.? \u00A0".Contains(c))
                 {
                     sum += 1f;  
