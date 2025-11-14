@@ -1,18 +1,12 @@
-﻿using Discord;
-using Discord.Audio;
-using Discord.WebSocket;
-using Microsoft.VisualBasic;
+﻿using NetCord;
+using NetCord.Gateway;
+using NetCord.Gateway.Voice;
 using Newtonsoft.Json.Linq;
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
-using System.Linq;
-using System.Runtime.CompilerServices;
-using System.Runtime.InteropServices;
-using System.Text;
-using System.Threading.Tasks;
-using YoutubeExplode.Playlists;
+using NetCord.Rest;
 
 namespace DiscordBot
 {
@@ -21,9 +15,9 @@ namespace DiscordBot
         public static readonly int UPDATE_INTERVAL_SECOND = 6;
         private static ConcurrentDictionary<ulong, Playlist> _playlists = new ConcurrentDictionary<ulong, Playlist>();
 
-        public static Playlist GetorCreatePlaylist(SocketGuild guild , IAudioClient vc)
+        public static Playlist GetorCreatePlaylist(Guild guild, VoiceClient vc)
         {
-            return _playlists.GetOrAdd(guild.Id,_=> new Playlist(guild,vc));
+            return _playlists.GetOrAdd(guild.Id, _ => new Playlist(guild, vc));
         }
 
         public static Playlist? GetPlaylist(ulong id)
@@ -39,81 +33,79 @@ namespace DiscordBot
 
         public static async Task LoopCheckVoiceChannelAndUsers()
         {
-            await Task.Run(async () =>
-            {
-                Timer loopCheckTimer = new Timer(async _ =>
-                {
-                    try
-                    {
-                        ulong[] ids = PlaylistSystem._playlists.Keys.ToArray();
+            //await Task.Run(() =>
+            //{
+            //    Timer loopCheckTimer = new Timer(async _ =>
+            //    {
+            //        try
+            //        {
+            //            ulong[] ids = PlaylistSystem._playlists.Keys.ToArray();
 
-                        foreach (ulong id in ids)
-                        {
-                            Playlist playlist = PlaylistSystem._playlists[id];
-                            if (playlist._vc == null || playlist._vc.ConnectionState != ConnectionState.Connected)
-                            {
-                                await playlist.Finish();
-                            }
-                            else
-                            {
-                                if (playlist._svc != null && playlist._svc.ConnectedUsers.Where(user => !user.IsBot).Count() < 1)
-                                {
-                                    await playlist._message.Channel.SendMessageAsync($"{GlobalVariable.botNickname}偵測到語音裡沒有人，我要退出苦來西苦！");
-                                    await playlist.Finish();
-                                    await Utils.DisconnectFromSVC(playlist._svc);
-                                }
-                                
-                            }
-                        }
-                    }
-                    catch (Exception e)
-                    {
-                        Console.WriteLine($"[Erro][LoopCheck] {e}");
-                    }
+            //            foreach (ulong id in ids)
+            //            {
+            //                Playlist playlist = PlaylistSystem._playlists[id];
+            //                if (playlist._vc == null || playlist._vc.Status != WebSocketStatus.Connecting)
+            //                {
+            //                    await playlist.Finish();
+            //                }
+            //                else
+            //                {
+            //                    if (playlist._svc != null && playlist._svc.ConnectedUsers.Where(user => !user.IsBot).Count() < 1)
+            //                    {
+            //                        await playlist._message.Channel.SendMessageAsync($"{GlobalVariable.botNickname}偵測到語音裡沒有人，我要退出苦來西苦！");
+            //                        await playlist.Finish();
+            //                        await Utils.DisconnectFromSVC(playlist._svc);
+            //                    }
 
-                }, null, TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5));
+            //                }
+            //            }
+            //        }
+            //        catch (Exception e)
+            //        {
+            //            Console.WriteLine($"[Erro][LoopCheck] {e}");
+            //        }
 
-                GlobalVariable.PermanentTimers.Add(loopCheckTimer);
-            });
+            //    }, null, TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5));
+
+            //    GlobalVariable.PermanentTimers.Add(loopCheckTimer);
+            //});
 
         }
     }
 
     public class Playlist
     {
-        internal readonly SocketGuild _guild;
-        internal readonly IAudioClient _vc;
+        internal readonly Guild _guild;
+        internal readonly VoiceClient _vc;
         internal readonly List<Tuple<WebOption, string>> _urls = new List<Tuple<WebOption, string>>();
         internal int _playingIndex = 0;
         internal bool _isPaused = false;
         internal bool _repeat = false;
         internal bool _interrupt = false;
 
-        internal SocketVoiceChannel _svc;
-        internal SocketInteraction _interaction;
+        internal Interaction _interaction;
         internal BufferedAudioStream _currentBufferedAudio;
-        internal IUserMessage _message;
+        internal RestMessage _message;
         internal Timer? _updateTimer;
         internal DateTime _startTime;
         internal DateTime _pauseTime;
         internal MediaProcess.AudioInfo? _currentTrack;
-        internal AudioOutStream? _discordStream;
+        internal Stream? _discordStream;
         internal Process? _ffmpeg;
         internal CancellationTokenSource _cts = new CancellationTokenSource();
 
-        public Playlist(SocketGuild guild , IAudioClient vc)
+        public Playlist(Guild guild, VoiceClient vc)
         {
             this._guild = guild;
             this._vc = vc;
-            var guildBot = this._guild.GetUser(GlobalVariable.botID);
-            this._svc = guildBot.VoiceChannel;
+            var guildBot = this._guild.GetUserAsync(GlobalVariable.botID).GetAwaiter().GetResult();
         }
 
         public void AddUrls(List<Tuple<WebOption, string>> urls)
         {
             this._urls.AddRange(urls);
         }
-        public async Task StartAsync(SocketInteraction interaction)
+        public async Task StartAsync(Interaction interaction)
         {
             if (_urls.Count == 0) return;
             this._playingIndex = 0;
@@ -128,24 +120,16 @@ namespace DiscordBot
             {
                 await this.UpdateMessage();
             }
-            ,null,TimeSpan.FromSeconds(PlaylistSystem.UPDATE_INTERVAL_SECOND),TimeSpan.FromSeconds(PlaylistSystem.UPDATE_INTERVAL_SECOND));
-            
+            , null, TimeSpan.FromSeconds(PlaylistSystem.UPDATE_INTERVAL_SECOND), TimeSpan.FromSeconds(PlaylistSystem.UPDATE_INTERVAL_SECOND));
         }
 
         private void CreateDiscordStream()
         {
-            this._discordStream = this._vc.CreatePCMStream(AudioApplication.Music, bufferMillis: 1500);
+            this._discordStream = this._vc.CreateOutputStream();
         }
 
-        private async Task PlayTrackAsync(SocketInteraction interaction)
+        private async Task PlayTrackAsync(Interaction interaction)
         {
-            if (this._discordStream == null)
-            {
-                this.CreateDiscordStream();
-                await this.PlayTrackAsync(interaction);
-                return;
-            }
-
             var url = this._urls[this._playingIndex];
             var urlAlgorithm = MediaProcess.DetermineAudioUrlAlgorithm(url.Item1);
 
@@ -173,16 +157,16 @@ namespace DiscordBot
 
             this._startTime = DateTime.Now;
 
-            _ = Task.Run(async () => 
+            _ = Task.Run(async () =>
             {
                 try
                 {
                     byte[] buffer = new byte[3840];
                     int bytesRead;
 
-                    while ((bytesRead = await this._currentBufferedAudio.ReadAsync(buffer,0,buffer.Length,_cts.Token)) > 0 || this._isPaused)
+                    while ((bytesRead = await this._currentBufferedAudio.ReadAsync(buffer, 0, buffer.Length, _cts.Token)) > 0 || this._isPaused)
                     {
-                        if(!this._isPaused) await this._discordStream.WriteAsync(buffer.AsMemory(0,bytesRead),this._cts.Token);
+                        if (!this._isPaused) await this._discordStream.WriteAsync(buffer.AsMemory(0, bytesRead), this._cts.Token);
                     }
                     this._currentBufferedAudio.Dispose();
                     await this._discordStream.FlushAsync();
@@ -196,7 +180,10 @@ namespace DiscordBot
 
             if (this._message == null)
             {
-                this._message = await interaction.Channel.SendMessageAsync(embed:this.BuildTrackEmbed(),components:ButtonHelper.CreateView(this),flags:MessageFlags.SuppressNotification);
+                var message = new InteractionMessageProperties()
+                    .AddEmbeds(this.BuildTrackEmbed())
+                    .AddComponents(ButtonHelper.CreateView(this));
+                this._message = await interaction.SendFollowupMessageAsync(message);
             }
 
         }
@@ -223,12 +210,12 @@ namespace DiscordBot
                 {
                     await _message.ModifyAsync(msg =>
                     {
-                        msg.Embed = this.BuildTrackEmbed();
-                        msg.Components = ButtonHelper.CreateView(this);
-                        msg.Flags = MessageFlags.SuppressNotification;
+                        msg.Embeds = new[]{this.BuildTrackEmbed()};
+                        msg.Components = new []{ ButtonHelper.CreateView(this)};
+                        msg.Flags = MessageFlags.SuppressNotifications;
                     });
                 }
-                catch(Exception e)
+                catch (Exception e)
                 {
                     Console.WriteLine($"[Error] Encounter error when updating message !{Environment.NewLine}{e}");
                 }
@@ -249,17 +236,17 @@ namespace DiscordBot
             return $"[{bar}] {current:mm\\:ss} / {total:mm\\:ss} [{(this._isPaused ? "暫停中" : "播放中")}]";
         }
 
-        private Embed BuildTrackEmbed()
+        private EmbedProperties BuildTrackEmbed()
         {
             TimeSpan playedTime = (_isPaused) ? _pauseTime - _startTime : DateTime.Now - _startTime;
             string desc = $"{GlobalVariable.botNickname}正在唱第{this._playingIndex + 1}首歌，後面還有{this._urls.Count - this._playingIndex - 1}首要唱！" + Environment.NewLine +
                             this.BuildProgressBar(playedTime, TimeSpan.FromSeconds(this._currentTrack?.Duration ?? 0));
             string repeatString = (this._repeat) ? "[循環播放]" : "[正常播放]";
-            var builder = new EmbedBuilder()
+            var builder = new EmbedProperties()
                 .WithTitle($"[{this._urls[this._playingIndex].Item1}] {this._currentTrack?.Title ?? "未知"} - {this._currentTrack?.Creator ?? "未知"} {repeatString}")
                 .WithDescription(desc)
-                .WithColor(Color.DarkBlue);
-            return builder.Build();
+                .WithColor(new Color(0, 0, 139));
+            return builder;
         }
 
         public async Task Finish()
@@ -271,12 +258,12 @@ namespace DiscordBot
                 await this._discordStream.DisposeAsync();
 
             if (this._message != null)
-                await this._message.ModifyAsync(msg => { msg.Content = "已結束/終止"; msg.Components = new ComponentBuilder().Build(); });
+                await this._message.ModifyAsync(msg => { msg.Content = "已結束/終止"; });
 
             PlaylistSystem.RemovePlaylist(this._guild.Id);
         }
 
-        public async Task onButtonPauseResume() 
+        public async Task onButtonPauseResume()
         {
             if (this._isPaused)
             {
@@ -290,19 +277,19 @@ namespace DiscordBot
             }
             this._isPaused = !this._isPaused;
         }
-        public async Task onButtonSkip() 
+        public async Task onButtonSkip()
         {
             if (this._currentBufferedAudio != null)
                 this._cts.Cancel();
         }
-        public async Task onButtonStop() 
+        public async Task onButtonStop()
         {
             await this.Finish();
         }
 
-        public async Task onButtonRepeat() 
-        { 
-            this._repeat=!this._repeat; 
+        public async Task onButtonRepeat()
+        {
+            this._repeat = !this._repeat;
         }
 
         public string GetCurrentUrl() => this._urls[this._playingIndex].Item2 ?? "https://www.youtube.com/watch?v=dQw4w9WgXcQ";
@@ -310,22 +297,26 @@ namespace DiscordBot
 
     public static class ButtonHelper
     {
-        public static MessageComponent CreateView(Playlist playlist)
+        public static ActionRowProperties CreateView(Playlist playlist)
         {
             ulong id = playlist._guild.Id;
-            var builder = new ComponentBuilder()
-                .WithButton("▶️ 暫停/繼續", $"pause_resume_{id}" , ButtonStyle.Success )
-                .WithButton("⏭️ 下一首", $"skip_{id}", ButtonStyle.Primary)
-                .WithButton("⏹️ 終止播放", $"stop_{id}", ButtonStyle.Danger)
-                .WithButton("🔁 循環播放", $"loop_{id}", ButtonStyle.Secondary)
-                .WithButton("🔗 連結", null, ButtonStyle.Link, url: playlist.GetCurrentUrl());
 
-            return builder.Build();
+            var component = new ActionRowProperties()
+                .AddComponents
+                (
+                    new ButtonProperties($"pause_resume_{id}", "▶️ 暫停/繼續", ButtonStyle.Success),
+                    new ButtonProperties($"skip_{id}", "⏭️ 下一首", ButtonStyle.Primary),
+                    new ButtonProperties($"stop_{id}", "⏹️ 終止播放" , ButtonStyle.Danger),
+                    new ButtonProperties($"loop_{id}", "🔁 循環播放" , ButtonStyle.Secondary),
+                    new LinkButtonProperties(playlist.GetCurrentUrl(), "🔗 連結")
+                );
+
+            return component;
         }
 
-        public static async Task OnComponentExecuted(SocketMessageComponent component)
+        public static async Task OnComponentExecuted(ButtonInteraction interaction)
         {
-            var id = component.Data.CustomId;
+            var id = interaction.Data.CustomId;
 
             if (id.StartsWith("pause_resume_"))
             {
@@ -333,7 +324,7 @@ namespace DiscordBot
                 var playlist = PlaylistSystem.GetPlaylist(guildId);
                 if (playlist != null)
                     await playlist.onButtonPauseResume();
-                await component.DeferAsync();
+                await Utils.DeferResponse(interaction,DisplayOption.Hide);
             }
             else if (id.StartsWith("skip_"))
             {
@@ -341,7 +332,7 @@ namespace DiscordBot
                 var playlist = PlaylistSystem.GetPlaylist(guildId);
                 if (playlist != null)
                     await playlist.onButtonSkip();
-                await component.DeferAsync();
+                await Utils.DeferResponse(interaction, DisplayOption.Hide);
             }
             else if (id.StartsWith("stop_"))
             {
@@ -349,7 +340,7 @@ namespace DiscordBot
                 var playlist = PlaylistSystem.GetPlaylist(guildId);
                 if (playlist != null)
                     await playlist.onButtonStop();
-                await component.DeferAsync();
+                await Utils.DeferResponse(interaction, DisplayOption.Hide);
             }
             else if (id.StartsWith("loop_"))
             {
@@ -357,7 +348,7 @@ namespace DiscordBot
                 var playlist = PlaylistSystem.GetPlaylist(guildId);
                 if (playlist != null)
                     await playlist.onButtonRepeat();
-                await component.DeferAsync();
+                await Utils.DeferResponse(interaction, DisplayOption.Hide);
             }
         }
 
@@ -370,7 +361,7 @@ namespace DiscordBot
         private string _path;
         private bool _isChanged = false;
 
-        public ConcurrentPlaylistSystem(string jsonFilePath , bool enableLoopCheck)
+        public ConcurrentPlaylistSystem(string jsonFilePath, bool enableLoopCheck)
         {
             this._path = jsonFilePath;
             this.Read();
@@ -378,7 +369,7 @@ namespace DiscordBot
                 this.LoopCheckAndWrite();
         }
         public void Read()
-        {        
+        {
             lock (this._lock)
             {
                 var jobj = Json.Read(this._path);
@@ -390,7 +381,7 @@ namespace DiscordBot
             lock (this._lock)
             {
                 var jobj = ConcurrentPlaylistSystem.ConcurrentDictToJObject(this._playlist);
-                Json.Write(jobj,this._path);
+                Json.Write(jobj, this._path);
             }
         }
         /// <summary>
@@ -411,7 +402,7 @@ namespace DiscordBot
                     this._isChanged = true;
             }
         }
-        public Dictionary<string,string> GetPlaylists(ulong serverID)
+        public Dictionary<string, string> GetPlaylists(ulong serverID)
         {
             if (!this.Exist(serverID))
                 return new Dictionary<string, string>();
@@ -420,7 +411,7 @@ namespace DiscordBot
         }
 
 
-        public bool Exist(ulong serverID , string name)
+        public bool Exist(ulong serverID, string name)
         {
             if (!this._playlist.ContainsKey(serverID)) return false;
             return this._playlist[serverID].ContainsKey(name);
@@ -441,7 +432,7 @@ namespace DiscordBot
                         this._isChanged = false;
                         this.Write();
                     }
-                },null,10*1000,10*1000);
+                }, null, 10 * 1000, 10 * 1000);
                 GlobalVariable.PermanentTimers.Add(t);
             });
 

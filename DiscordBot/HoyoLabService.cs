@@ -1,21 +1,7 @@
-﻿using Discord;
-using Discord.WebSocket;
-using MarchSeven;
-using MarchSeven.Models.Abstractions;
-using MarchSeven.Models.Core;
-using MarchSeven.Models.Core.Cookie;
-using MarchSeven.Models.Core.EndPoints;
-using MarchSeven.Models.GenshinImpact;
-using MarchSeven.Models.HoYoLab;
-using MarchSeven.Models.ZenlessZoneZero;
-using MarchSeven.Util.Errors;
+﻿using Humanizer;
+using NetCord;
+using NetCord.Gateway;
 using Newtonsoft.Json.Linq;
-using System;
-using System.Collections.Generic;
-using System.Diagnostics;
-using System.Linq;
-using System.Net;
-using System.Net.Http;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -26,9 +12,10 @@ namespace DiscordBot
     {
         public CheckStatus Status { get; set; } = CheckStatus.Unknown;
         public string Name { get; set; } = "Unknown";
-        public int CurrentResin { get;set; }
+        public int CurrentResin { get; set; }
         public int MaxResin { get; set; }
-        public DateTime MaxAt { get;set; }
+        public TimeSpan RecoveryTime { get; set; }
+        public DateTime MaxAt { get; set; }
         public HoyolabUserInfo() { }
         public HoyolabUserInfo(HoyolabUserInfo other)
         {
@@ -36,6 +23,7 @@ namespace DiscordBot
             Name = other.Name;
             CurrentResin = other.CurrentResin;
             MaxResin = other.MaxResin;
+            RecoveryTime = other.RecoveryTime;
             MaxAt = other.MaxAt;
         }
     }
@@ -46,7 +34,7 @@ namespace DiscordBot
         public string BroadcastChannelId { get; set; } = "";
         public string BroadcastServerId { get; set; } = "";
 
-        public HoyolabBroadcastInfo(HoyolabUserInfo info): base(info)
+        public HoyolabBroadcastInfo(HoyolabUserInfo info) : base(info)
         {
 
         }
@@ -54,21 +42,21 @@ namespace DiscordBot
 
     public enum GameType
     {
-        Genshin , ZenlessZoneZero , HonkaiStarRail
+        Genshin, ZenlessZoneZero, HonkaiStarRail
     }
 
     public enum CheckStatus
     {
-        Success , UserNotFound , UserNotRegister , Unknown , UnknownError
+        Success, UserNotFound, UserNotRegister, Unknown, UnknownError
     }
 
     public class HoyoLabService
     {
         private struct GameInfo
         {
-            public string GameKey { get; set; } 
-            public string GameName { get; set; } 
-            public string PlayerCallName { get; set; } 
+            public string GameKey { get; set; }
+            public string GameName { get; set; }
+            public string PlayerCallName { get; set; }
         }
         private static Dictionary<GameType, GameInfo> gameInfoMap = new Dictionary<GameType, GameInfo>()
         {
@@ -94,7 +82,7 @@ namespace DiscordBot
         private static string cookiesJsonFilePath = ".\\Data\\genshin_cookies_and_id.json";
         private JObject cookiesJsonObject;
 
-        public HoyoLabService( )
+        public HoyoLabService()
         {
             cookiesJsonObject = Json.Read(cookiesJsonFilePath);
         }
@@ -116,13 +104,15 @@ namespace DiscordBot
             int cur = root.GetProperty("current_resin").GetInt32();
             int max = root.GetProperty("max_resin").GetInt32();
             int restore = int.Parse(root.GetProperty("resin_recovery_time").ToString());
+            TimeSpan sec = TimeSpan.FromSeconds(restore);
 
             return new HoyolabUserInfo()
             {
                 Name = name,
                 CurrentResin = cur,
                 MaxResin = max,
-                MaxAt = DateTime.Now + TimeSpan.FromSeconds(restore)
+                RecoveryTime = sec,
+                MaxAt = DateTime.Now + sec
             };
 
         }
@@ -133,7 +123,7 @@ namespace DiscordBot
 
             string url = $"https://bbs-api-os.hoyolab.com/game_record/hkrpg/api/note?server={region}&role_id={guid}";
 
-            var response = await SendRequestAsync(url, cookie , true);
+            var response = await SendRequestAsync(url, cookie, true);
             var json = JsonDocument.Parse(response);
 
             if (!json.RootElement.TryGetProperty("data", out var root))
@@ -144,13 +134,15 @@ namespace DiscordBot
             int cur = root.GetProperty("current_stamina").GetInt32();
             int max = root.GetProperty("max_stamina").GetInt32();
             int restore = int.Parse(root.GetProperty("stamina_recover_time").ToString());
+            TimeSpan sec = TimeSpan.FromSeconds(restore);
 
             return new HoyolabUserInfo()
             {
                 Name = name,
                 CurrentResin = cur,
                 MaxResin = max,
-                MaxAt = DateTime.Now + TimeSpan.FromSeconds(restore)
+                RecoveryTime = sec,
+                MaxAt = DateTime.Now + sec
             };
         }
 
@@ -167,55 +159,71 @@ namespace DiscordBot
             {
                 throw new Exception("Failed to get zzz info !");
             }
-   
+
             var energy = root.GetProperty("energy");
             var progress = energy.GetProperty("progress");
             int cur = progress.GetProperty("current").GetInt32();
             int max = progress.GetProperty("max").GetInt32();
             int restore = energy.GetProperty("restore").GetInt32();
+            TimeSpan sec = TimeSpan.FromSeconds(restore);
 
             return new HoyolabUserInfo()
             {
                 Name = name,
                 CurrentResin = cur,
                 MaxResin = max,
-                MaxAt = DateTime.Now + TimeSpan.FromSeconds(restore)
+                RecoveryTime = sec,
+                MaxAt = DateTime.Now + sec
             };
 
         }
 
 
-        public void LoopCheckResin(DiscordSocketClient client, int batteryThreshold, TimeSpan interval , GameType type)
+        public void LoopCheckResin(GatewayClient client, int batteryThreshold, TimeSpan interval, GameType type)
         {
             Timer t = new Timer(async _ =>
             {
-                var notifyInfos = await this.CheckExceedResin(batteryThreshold,type);
-
-                if (notifyInfos == null)
-                    return;
-
-                foreach (var notifyInfo in notifyInfos)
+                try
                 {
-                    var channel = await client.GetChannelAsync(ulong.Parse(notifyInfo.BroadcastChannelId));
-                    if (channel != null)
+                    var notifyInfos = await this.CheckExceedResin(batteryThreshold, type);
+
+                    if (notifyInfos == null)
+                        return;
+
+                    foreach (var notifyInfo in notifyInfos)
                     {
-                        var info = gameInfoMap[type];
-                        string notifyString = $"[{info.GameName}]{GlobalVariable.botNickname}偵測到{info.PlayerCallName} {Utils.MentionWithID(ulong.Parse(notifyInfo.DiscordId))}";
-                        if (notifyInfo.CurrentResin >= notifyInfo.MaxResin)
+                        var channel = await client.Rest.GetChannelAsync(ulong.Parse(notifyInfo.BroadcastChannelId));
+                        if (channel != null)
                         {
-                            notifyString += "爆體力辣！";
+                            var info = gameInfoMap[type];
+                            string nickname = notifyInfo.Name;
+                            string notifyString = $"[{info.GameName}]{GlobalVariable.botNickname}偵測到{info.PlayerCallName} {nickname} {Utils.MentionWithID(ulong.Parse(notifyInfo.DiscordId))}";
+                            if (notifyInfo.CurrentResin >= notifyInfo.MaxResin)
+                            {
+                                notifyString += "爆體力辣！";
+                            }
+                            else
+                            {
+                                notifyString += "的體力快滿了！";
+                            }
+
+                            string humanized = notifyInfo.RecoveryTime.Humanize(2, collectionSeparator: " ");
+                            string remainingTime = (notifyInfo.RecoveryTime >= TimeSpan.Zero) ?
+                                $"剩餘 : {humanized}" :
+                                $"超出 : {humanized}";
+
+                            notifyString += $"{Environment.NewLine}{notifyInfo.CurrentResin}/{notifyInfo.MaxResin}";
+                            notifyString += $"{Environment.NewLine}預計滿體力時間 {notifyInfo.MaxAt:yyyy-MM-dd HH:mm:ss}";
+                            notifyString += $"{Environment.NewLine}{remainingTime}";
+
+                            if (channel is TextChannel itc)
+                                await itc.SendMessageAsync(notifyString);
                         }
-                        else
-                        {
-                            notifyString += "的體力快滿了！";
-                        }
-                        notifyString += Environment.NewLine;
-                        notifyString += $"{notifyInfo.CurrentResin}/{notifyInfo.MaxResin}";
-                        notifyString += Environment.NewLine;
-                        notifyString += $"預計滿體力時間 {notifyInfo.MaxAt:yyyy-MM-dd HH:mm:ss}";
-                        if (channel is ITextChannel itc)
-                            await itc.SendMessageAsync(notifyString);
                     }
+                }
+                catch (Exception e)
+                {
+                    Console.WriteLine($"[LOOP] Failed to check resin , {e}");
                 }
 
             }, null, TimeSpan.FromSeconds(0), interval);
@@ -223,7 +231,7 @@ namespace DiscordBot
             GlobalVariable.PermanentTimers.Add(t);
         }
 
-        public async Task<List<HoyolabBroadcastInfo>> CheckExceedResin(int threshold , GameType type)
+        public async Task<List<HoyolabBroadcastInfo>> CheckExceedResin(int threshold, GameType type)
         {
             var servers = this.cookiesJsonObject.GetKeys();
 
@@ -265,42 +273,13 @@ namespace DiscordBot
                         notifyInfos.Add(broadcast);
                     }
 
-                    //int maxTry = 3;
-                    //for(int i = 0; i < maxTry; i++)
-                    //{
-                    //    try
-                    //    {
-                    //        var info = await algorithm(cookie, huid, guid);
-                    //        if (info != null && info.CurrentResin >= threshold)
-                    //        {
-                    //            var broadcast = new HoyolabBroadcastInfo(info)
-                    //            {
-                    //                Status = CheckStatus.Success,
-                    //                DiscordId = dcID,
-                    //                BroadcastServerId = server,
-                    //                BroadcastChannelId = channel
-                    //            };
-                    //            notifyInfos.Add(broadcast);
-                    //        }
-                    //        if(info!=null)
-                    //            break; 
-                    //    }
-                    //    catch
-                    //    {
-
-                    //    }
-                    //}
-
                 }
             }
 
             return notifyInfos;
         }
 
-
-
-
-        public Func<string,string,string,Task<HoyolabUserInfo?>> ToGetInfoAlgorithm(GameType type)
+        public Func<string, string, string, Task<HoyolabUserInfo?>> ToGetInfoAlgorithm(GameType type)
         {
             switch (type)
             {
@@ -314,15 +293,15 @@ namespace DiscordBot
             throw new Exception("Unsupported algorithm !");
         }
 
-        public async Task<HoyolabUserInfo> GetInfoAsyncByDiscordId(string dcid ,GameType type)
+        public async Task<HoyolabUserInfo> GetInfoAsyncByDiscordId(string dcid, GameType type)
         {
-            bool seen = false , tried = false;
+            bool seen = false, tried = false;
             var keys = cookiesJsonObject.GetKeys();
-            foreach(var key in keys)
+            foreach (var key in keys)
             {
                 var sid = cookiesJsonObject.GetValueOrDefault<string>(key, "service_channel_id");
-                var arr = cookiesJsonObject.GetValueOrDefault<JArray>(key,"users");
-                for(int i =0;i<arr.Count;i++)
+                var arr = cookiesJsonObject.GetValueOrDefault<JArray>(key, "users");
+                for (int i = 0; i < arr.Count; i++)
                 {
                     var user = arr[i];
                     string id = user.GetValueOrDefault<string>("dc_id");
@@ -340,7 +319,7 @@ namespace DiscordBot
                         string cookie = this.ToCookieString(c);
                         string huid = this.GetHoyoUid(c);
                         var algorithm = this.ToGetInfoAlgorithm(type);
-                        var info = await algorithm(cookie,huid,guid);
+                        var info = await algorithm(cookie, huid, guid);
 
                         if (info != null)
                         {
@@ -361,31 +340,29 @@ namespace DiscordBot
             }
 
             if (seen)
-                return new HoyolabUserInfo() {Status = CheckStatus.UserNotRegister };
-            if(tried)
+                return new HoyolabUserInfo() { Status = CheckStatus.UserNotRegister };
+            if (tried)
                 return new HoyolabUserInfo() { Status = CheckStatus.UnknownError };
 
-            return  new HoyolabUserInfo() { Status = CheckStatus.UserNotFound };
+            return new HoyolabUserInfo() { Status = CheckStatus.UserNotFound };
         }
 
         private string ToCookieString(JObject obj)
         {
-             return String.Join("; ",
-                    obj.Properties().Select(p => $"{p.Name}={p.Value}")
-                );
+            return String.Join("; ",
+                   obj.Properties().Select(p => $"{p.Name}={p.Value}")
+               );
         }
-
         private string GetHoyoUid(JObject obj)
         {
             var keys = obj.GetKeys();
-            foreach(var key in keys)
+            foreach (var key in keys)
             {
-                if(key.StartsWith("ltuid"))
+                if (key.StartsWith("ltuid"))
                     return obj.GetValueOrDefault<string>(key);
             }
             return "-1";
         }
-
 
         //DS
         private static readonly string SALT_OVERSEA = "6s25p5ox5y14umn1p61aqyyvbvvl3lrt";
@@ -419,21 +396,20 @@ namespace DiscordBot
             return Convert.ToHexStringLower(md5Byte);
         }
 
-
-        private async Task<string> SendRequestAsync(string url, string cookie , bool ds = false)
+        private async Task<string> SendRequestAsync(string url, string cookie, bool ds = false)
         {
             var http = new HttpClient();
             var request = new HttpRequestMessage(HttpMethod.Get, url);
 
             request.Headers.Add("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36");
-            request.Headers.Add("Cookie",cookie);
+            request.Headers.Add("Cookie", cookie);
 
             request.Headers.Add("x-rpc-app_version", "1.5.0");
             request.Headers.Add("x-rpc-client_type", "5");
             request.Headers.Add("x-rpc-language", "zh-tw");
 
             if (ds)
-                request.Headers.Add("ds",GenerateDynamicSecret());
+                request.Headers.Add("ds", GenerateDynamicSecret());
 
             var response = await http.SendAsync(request);
             //response.EnsureSuccessStatusCode();
@@ -441,7 +417,7 @@ namespace DiscordBot
             return await response.Content.ReadAsStringAsync();
         }
 
-        private async Task<(string,string)> GetPlayerNameRegionAsync(string huid , string guid , string cookie)
+        private async Task<(string, string)> GetPlayerNameRegionAsync(string huid, string guid, string cookie)
         {
             string url = $"https://bbs-api-os.hoyoverse.com/game_record/card/wapi/getGameRecordCard?uid={huid}";
             var response = await SendRequestAsync(url, cookie);
@@ -459,21 +435,21 @@ namespace DiscordBot
                 throw new Exception("No game info !");
             }
 
-            for(int i = 0; i < length; i++)
+            for (int i = 0; i < length; i++)
             {
                 var r = lst[i];
 
-                if(r.TryGetProperty("game_role_id",out var pid))
+                if (r.TryGetProperty("game_role_id", out var pid))
                 {
                     string sid = pid.ToString();
-                    if(sid == guid)
+                    if (sid == guid)
                     {
-                        return (r.GetProperty("nickname").ToString(),r.GetProperty("region").ToString());
+                        return (r.GetProperty("nickname").ToString(), r.GetProperty("region").ToString());
                     }
                 }
             }
 
-            return ("Unknown","Unknown");
+            return ("Unknown", "Unknown");
         }
 
     }

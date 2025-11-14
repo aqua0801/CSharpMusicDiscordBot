@@ -1,68 +1,61 @@
-﻿using Discord;
-using Discord.Commands;
-using Discord.Interactions;
-using Discord.WebSocket;
-using DiscordBot;
-using Microsoft.Extensions.DependencyInjection;
-using StringFormatting;
-using System.Diagnostics;
-using System.IO.Compression;
-using System.Reflection;
-using System.Runtime.InteropServices;
+﻿using DiscordBot;
+using NetCord;
+using NetCord.Gateway;
+using NetCord.Logging;
+using NetCord.Rest;
+using NetCord.Services;
+using NetCord.Services.ApplicationCommands;
+using NetCord.Services.Commands;
+using NetCord.Services.ComponentInteractions;
 
-Console.InputEncoding = System.Text.Encoding.UTF8;
-Console.OutputEncoding = System.Text.Encoding.UTF8;
-
-var config = new DiscordSocketConfig
-{
-    GatewayIntents = GatewayIntents.AllUnprivileged | GatewayIntents.MessageContent,
-    LogLevel = LogSeverity.Info
-};
-
-var client = new DiscordSocketClient(config);
-var commands = new CommandService();
-var interactions = new InteractionService(client.Rest);
-client.ButtonExecuted += ButtonHelper.OnComponentExecuted;
 bool firstTimeReady = true;
-
-var services = new ServiceCollection()
-    .AddSingleton(client)
-    .AddSingleton(commands)
-    .AddSingleton(interactions)
-    .BuildServiceProvider();
 
 GlobalVariable.Init();
 
 
-Task LogAsync(LogMessage msg)
+GatewayClient client = new(new BotToken(GlobalVariable.botToken), new GatewayClientConfiguration
 {
-    Console.WriteLine($"[LOG]{msg}");
-    return Task.CompletedTask;
-}
+    Logger = new ConsoleLogger(),
+    Intents = GatewayIntents.All 
+});
+
+var user = await client.Rest.GetCurrentUserAsync();
+var services = new CommandService<CommandContext>();
+var applicationService = new ApplicationCommandService<ApplicationCommandContext>();
+var autocompleteService = new ApplicationCommandService<ApplicationCommandContext,AutocompleteInteractionContext>();
+var interactionService = new ComponentInteractionService<ButtonInteractionContext>();
+
+services.AddModules(typeof(Program).Assembly);
+applicationService.AddModules(typeof(Program).Assembly);
+autocompleteService.AddModules(typeof(Program).Assembly);
+interactionService.AddModules(typeof(Program).Assembly);
 
 async Task GetBotInfo()
 {
-    GlobalVariable.botName = client.CurrentUser.Username;
-    GlobalVariable.botID = client.CurrentUser.Id;
-    var application = await client.GetApplicationInfoAsync();
-    GlobalVariable.creatorName = application.Owner.Username;
+    GlobalVariable.botName = user.Username;
+    GlobalVariable.botID = user.Id;
+    GlobalVariable.client = client;
+    var application = await client.Rest.GetCurrentApplicationAsync();
+    GlobalVariable.creatorName = application.Owner.GlobalName;
     GlobalVariable.creatorID = application.Owner.Id;
 }
-
 void LoopSetGameAsync()
 {
     Timer t = new Timer(async _ =>
     {
-        await client.SetGameAsync($"{GlobalVariable.botNickname}在{DateTime.Now:HH:mm}撿了{Utils.RandInt(0, 9999)}個石頭！",type:ActivityType.CustomStatus);
+        await client.UpdatePresenceAsync(new PresenceProperties(UserStatusType.Online)
+        {
+            Activities = new[] {new UserActivityProperties
+            (
+                $"{GlobalVariable.botNickname}在{DateTime.Now:HH:mm}撿了{Utils.RandInt(0, 9999)}個石頭！", UserActivityType.Custom
+            )}
+        });   
+
     }, null, TimeSpan.FromSeconds(1), TimeSpan.FromMinutes(1));
     GlobalVariable.PermanentTimers.Add(t);
 }
 
-client.Log += LogAsync;
-commands.Log += LogAsync;
-interactions.Log += LogAsync;
-
-client.Ready += async () =>
+client.Ready += async (_) =>
 {
     if (firstTimeReady)
     {
@@ -70,7 +63,8 @@ client.Ready += async () =>
         await GetBotInfo();
         await PlaylistSystem.LoopCheckVoiceChannelAndUsers();
         ImageAlgorithm.LoopCheckExpiredCache();
-        _ = Task.Run(async () =>
+
+        await Task.Run(async () =>
         {
             var loopcheck = new HoyoLabService();
             loopcheck.LoopCheckResin(client, 190, TimeSpan.FromMinutes(30), GameType.Genshin);
@@ -78,57 +72,48 @@ client.Ready += async () =>
             loopcheck.LoopCheckResin(client, 280, TimeSpan.FromMinutes(30), GameType.HonkaiStarRail);
             await Task.Delay(200);
             loopcheck.LoopCheckResin(client, 225, TimeSpan.FromMinutes(30), GameType.ZenlessZoneZero);
-
         });
         LoopSetGameAsync();
         firstTimeReady = false;
-        Console.WriteLine($"目前登入 : {client.CurrentUser.Username}#{client.CurrentUser.Discriminator}");
+        Console.WriteLine($"目前登入 : {user.Username}#{user.Discriminator}");
     }
     else
     {
-        Console.WriteLine($"重新登入 : {client.CurrentUser.Username}#{client.CurrentUser.Discriminator}");
+        Console.WriteLine($"重新登入 : {user.Username}#{user.Discriminator}");
     }
 };
 
-client.MessageReceived += async (messageParam) =>
+client.MessageCreate += async message => 
 {
-    if (messageParam is not SocketUserMessage message) return;
-    if (message.Author.IsBot) return;
+    if (!message.Content.StartsWith(GlobalVariable.commandPrefix) || message.Author.IsBot)
+        return;
 
-    int argPos = 0;
-    if (!message.HasCharPrefix('!', ref argPos)) return;
-
-    var context = new SocketCommandContext(client, message);
-    var result = await commands.ExecuteAsync(context, argPos, services);
-
-    if (!result.IsSuccess && result.Error != CommandError.UnknownCommand)
+    if(message.Content == $"{GlobalVariable.commandPrefix}sync")
     {
-        Console.WriteLine($"錯誤指令： {result.ErrorReason}");
-        await context.Channel.SendMessageAsync($"❌ {result.ErrorReason}");
+        await applicationService.RegisterCommandsAsync(client.Rest, client.Id);
+        await autocompleteService.RegisterCommandsAsync(client.Rest, client.Id);
+        return;
     }
+
+    var context = new CommandContext(message, client);
+
+    var result = await services.ExecuteAsync(prefixLength: 1, context);
+
+    if (result is not IFailResult failResult)
+        return;
+
+    Console.WriteLine($"[Error] Command failed : {failResult.Message}");
 };
 
-client.InviteCreated += async (invite) =>
+client.InteractionCreate += async interaction =>
 {
-    Console.WriteLine($"New invite created: {invite.Code} by {invite.Inviter}");
+    if (interaction is ButtonInteraction btnInteraction)
+        await ButtonHelper.OnComponentExecuted(btnInteraction);
+    else if (interaction is ApplicationCommandInteraction applicationInteraction)
+        await applicationService.ExecuteAsync(new ApplicationCommandContext(applicationInteraction, client));
+    else if (interaction is AutocompleteInteraction autoInteraction)
+        await autocompleteService.ExecuteAutocompleteAsync(new AutocompleteInteractionContext(autoInteraction,client));
 };
 
-client.GuildScheduledEventUpdated += async (before, after) =>
-{
-    Console.WriteLine($"Event updated: {before.Value.Name} → {after.Name}");
-};
-
-
-client.InteractionCreated += async (interaction) =>
-{
-    var intctx = new SocketInteractionContext(client, interaction);
-    await interactions.ExecuteCommandAsync(intctx, null);
-};
-
-await commands.AddModulesAsync(Assembly.GetEntryAssembly(),services);
-await interactions.AddModulesAsync(Assembly.GetEntryAssembly(),null);
-await client.LoginAsync(TokenType.Bot, GlobalVariable.botToken);
 await client.StartAsync();
-
-
 await Task.Delay(-1);

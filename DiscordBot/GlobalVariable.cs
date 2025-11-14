@@ -1,4 +1,4 @@
-﻿using Discord.Audio;
+﻿using NetCord.Gateway;
 using Newtonsoft.Json.Linq;
 
 using System.Collections.Concurrent;
@@ -13,6 +13,7 @@ namespace DiscordBot
         public static string creatorName = "Unknown";
 
         public static string gitUrl = "";
+        public static string gitUrl2 = "";
         public static string version = "0.0.0.0";
         public const string ffmpegExePath = ".\\Data\\ffmpeg.exe";
         public const string ffprobeExePath = ".\\Data\\ffprobe.exe";
@@ -23,14 +24,18 @@ namespace DiscordBot
         public const string imagesFolderPath = ".\\Data\\Images\\images\\";
         public const string labelsFolderPath = ".\\Data\\Images\\labels\\";
         public static JObject envJsonObject = new JObject();
+        public static char commandPrefix = '!';
 
         public static ulong botID;
         public static ulong creatorID;
 
-        public static ConcurrentPlaylistSystem concurrentPlaylist = new ConcurrentPlaylistSystem(GlobalVariable.playlistJsonFilePath,true);
-        public static ConcurrentDictionary<ulong, IAudioClient> serverAudioClientMap = new ConcurrentDictionary<ulong, IAudioClient>();
+        public static GatewayClient client;
+
+        public static ConcurrentPlaylistSystem concurrentPlaylist = new ConcurrentPlaylistSystem(GlobalVariable.playlistJsonFilePath, true);
+        //public static ConcurrentDictionary<ulong, IAudioClient> serverAudioClientMap = new ConcurrentDictionary<ulong, IAudioClient>();
         public static HoyoLabService hoyoLab = new HoyoLabService();
-     
+        public static List<int> serverTierUploadFileSize;
+
 
         public static ConcurrentBag<Timer> PermanentTimers = new ConcurrentBag<Timer>();
 
@@ -41,6 +46,9 @@ namespace DiscordBot
             GlobalVariable.botNickname = GlobalVariable.envJsonObject.GetValueOrDefault<string>("bot_nickname");
             GlobalVariable.version = GlobalVariable.envJsonObject.GetValueOrDefault<string>("version");
             GlobalVariable.gitUrl = GlobalVariable.envJsonObject.GetValueOrDefault<string>("git_repo_link");
+            GlobalVariable.gitUrl2 = GlobalVariable.envJsonObject.GetValueOrDefault<string>("git_repo_link2");
+            GlobalVariable.serverTierUploadFileSize = GlobalVariable.envJsonObject.GetValueOrDefault<List<int>>("server_tier_file_size");
+            GlobalVariable.commandPrefix = GlobalVariable.envJsonObject.GetValueOrDefault<char>("prefix");
         }
     }
 }

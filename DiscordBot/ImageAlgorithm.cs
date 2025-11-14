@@ -1,23 +1,16 @@
-﻿using Discord;
-using Discord.Interactions;
+﻿using NetCord;
+using NetCord.Rest;
+using NetCord.Services.ApplicationCommands;
 using Newtonsoft.Json.Linq;
-using System;
 using System.Collections.Concurrent;
-using System.Collections.Generic;
-using System.Diagnostics;
-using System.Linq;
-using System.Security.Cryptography;
-using System.Text;
-using System.Threading.Tasks;
 
 namespace DiscordBot
 {
-
     public class ConfidenceResult
     {
-        public float  Score { get; set; }
-        public string Path {  get; set; }
-        public string DisplayName { get; set;}
+        public float Score { get; set; }
+        public string Path { get; set; }
+        public string DisplayName { get; set; }
     }
     public class ImageAlgorithm
     {
@@ -27,20 +20,20 @@ namespace DiscordBot
             private const float _characWeight = 1.5f;
             private const float _sideWeight = 1.0f;
             private const float _equalWeight = 1.0f;
-            public static (float,string) ToConfidence(JObject jobj,string query)
+            public static (float, string) ToConfidence(JObject jobj, string query)
             {
                 string[] mainTags = jobj.GetValueOrDefault<string[]>("main-tag");
                 string[] characTags = jobj.GetValueOrDefault<string[]>("character-tag");
                 string[] sideTags = jobj.GetValueOrDefault<string[]>("side-tag");
 
-                float SegmentConfidence(string[] tags , float weight)
+                float SegmentConfidence(string[] tags, float weight)
                 {
-                    double _sum=0;
+                    double _sum = 0;
 
-                    foreach(string tag in tags)
+                    foreach (string tag in tags)
                     {
                         float _weight = weight;
-                        double _confidence = Utils.HybridScoreSimilarity(query,tag);
+                        double _confidence = Utils.HybridScoreSimilarity(query, tag);
                         if (query == tag) _weight += LabelDecoder._equalWeight;
                         _sum += _weight * _confidence;
                     }
@@ -51,7 +44,6 @@ namespace DiscordBot
                     + SegmentConfidence(characTags, LabelDecoder._characWeight)
                     + SegmentConfidence(sideTags, LabelDecoder._sideWeight), mainTags[0]);
             }
-
         }
 
         private class MinHeapComparer : IComparer<ConfidenceResult>
@@ -77,15 +69,15 @@ namespace DiscordBot
         private static TimeSpan _cacheExpiredTimeSpan = TimeSpan.FromSeconds(5);
         private static ConcurrentDictionary<string, RefPair<DateTime, string>> _cachedQueryResult = new ConcurrentDictionary<string, RefPair<DateTime, string>>();
 
-        public static List<ConfidenceResult> SearchImage(string query , int maxResultCount = 25 , bool acceptsCachedResult = false)
+        public static List<ConfidenceResult> SearchImage(string query, int maxResultCount = 25, bool acceptsCachedResult = false)
         {
             if (maxResultCount == 1 && acceptsCachedResult)
             {
                 if (ImageAlgorithm._cachedQueryResult.TryGetValue(query, out var result))
                     return new List<ConfidenceResult>() { new ConfidenceResult { Score = 0f, DisplayName = "", Path = result.Item2 } };
             }
- 
-            var fileLists = ImageAlgorithm.PartitionFiles(new DirectoryInfo(ImageAlgorithm._labelsPath).GetFiles() ,Environment.ProcessorCount);
+
+            var fileLists = ImageAlgorithm.PartitionFiles(new DirectoryInfo(ImageAlgorithm._labelsPath).GetFiles(), Environment.ProcessorCount);
             List<Thread> threads = new List<Thread>();
             var heap = new SortedSet<(ConfidenceResult Item, int UniqueId)>(new HeapComparer());
             object _lock = new object();
@@ -103,7 +95,7 @@ namespace DiscordBot
                     {
                         var file = files[j];
                         string labelPath = file.FullName;
-                        var (confidence , displayName) = LabelDecoder.ToConfidence(Json.Read(labelPath), query);
+                        var (confidence, displayName) = LabelDecoder.ToConfidence(Json.Read(labelPath), query);
                         string imagePath = $"{ImageAlgorithm._imagesPath}{Path.GetFileNameWithoutExtension(labelPath)}.jpg";
                         var result = new ConfidenceResult
                         {
@@ -176,8 +168,6 @@ namespace DiscordBot
         }
 
 
-
-
         private static List<List<FileInfo>> PartitionFiles(FileInfo[] files, int numPartitions)
         {
             var partitions = new List<List<FileInfo>>(numPartitions);
@@ -219,23 +209,23 @@ namespace DiscordBot
         }
 
 
-        public class SearchImageAutocomplete : AutocompleteHandler
+        public class SearchImageAutocomplete : IAutocompleteProvider<AutocompleteInteractionContext>
         {
-            public override async Task<AutocompletionResult> GenerateSuggestionsAsync(IInteractionContext context, IAutocompleteInteraction autocompleteInteraction, IParameterInfo parameter, IServiceProvider services)
+            public ValueTask<IEnumerable<ApplicationCommandOptionChoiceProperties>> GetChoicesAsync(ApplicationCommandInteractionDataOption option, AutocompleteInteractionContext context)
             {
-                string current = autocompleteInteraction.Data.Current.Value.ToString();
-    
+                string current = option.Value;
+
                 var results = ImageAlgorithm.SearchImage(current);
 
                 var options = results.
-                    Select(result=> new AutocompleteResult(result.DisplayName,result.Path));
+                    Select(result => new ApplicationCommandOptionChoiceProperties(result.DisplayName, result.Path));
 
                 if (!String.IsNullOrEmpty(current))
-                    ImageAlgorithm._cachedQueryResult.AddOrUpdate(current ,
-                        _ => new RefPair<DateTime, string> (DateTime.Now, results.First().Path) ,
-                       (k,v) => { v.Item1 = DateTime.Now; return v; } );
-                
-                return AutocompletionResult.FromSuccess(options);
+                    ImageAlgorithm._cachedQueryResult.AddOrUpdate(current,
+                        _ => new RefPair<DateTime, string>(DateTime.Now, results.First().Path),
+                       (k, v) => { v.Item1 = DateTime.Now; return v; });
+
+                return ValueTask.FromResult(options);
             }
         }
     }

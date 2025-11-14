@@ -1,8 +1,11 @@
 ﻿using AngleSharp.Dom;
-using Discord;
-using Discord.Commands;
-using Discord.Interactions;
-using Discord.WebSocket;
+using NetCord;
+using NetCord.Gateway;
+using NetCord.Gateway.Voice;
+using NetCord.Rest;
+using NetCord.Services;
+using NetCord.Services.ApplicationCommands;
+using NetCord.Services.Commands;
 using Newtonsoft.Json.Linq;
 using System;
 using System.Collections.Concurrent;
@@ -12,11 +15,88 @@ using System.Threading.Tasks;
 
 namespace DiscordBot
 {
+    public enum JoinToUserState
+    {
+        UserNotInVC , BotMoveToVC , BotJoinToVC , AlreadyInSameVC , Unknown
+    }
+    public enum JoinState
+    {
+        Success , Fail , Unknown
+    }
+    public record JoinResult
+    {
+        public JoinToUserState? ToUserState { get; set; } = JoinToUserState.Unknown;
+        public JoinState JoinState { get; set; } = JoinState.Unknown;
 
+        public VoiceClient VC;
+
+        public override string ToString()
+        {
+            return $"ToUser : {this.ToUserState} , Join : {this.JoinState} , VC : {((this.VC==null)?"null":this.VC.GuildId.ToString())}";
+        }
+
+    }
     public static class Utils
     {
         public static Random randSeed = new Random();
 
+        public static async Task<JoinResult> JoinToUserVC<T>(T context) where T : IGuildContext , IUserContext
+        {
+            var user = context.User;
+            var guild = context.Guild;
+
+            var vcState = guild?.VoiceStates.GetValueOrDefault(user.Id);
+            var vcID = vcState?.ChannelId;
+
+            guild.VoiceStates.TryGetValue(GlobalVariable.client.Id, out VoiceState bot);
+
+            var result = new JoinResult()
+            {
+                JoinState = JoinState.Fail,
+                VC = null
+            };
+
+            if(!vcID.HasValue)
+            {
+                result.ToUserState = JoinToUserState.UserNotInVC;
+                return result;
+            }
+            if (bot!=null && bot.ChannelId!=null)
+                result.ToUserState = (bot.ChannelId.Value == vcID) ? JoinToUserState.AlreadyInSameVC : JoinToUserState.BotMoveToVC;
+            else
+                result.ToUserState = JoinToUserState.BotJoinToVC;
+
+            try
+            {
+                var vc = await GlobalVariable.client.JoinVoiceChannelAsync(guild.Id, vcID.Value);
+                await vc.StartAsync();
+                result.VC = vc;
+                result.JoinState = JoinState.Success;
+
+                return result;
+            }
+            catch(Exception e)
+            {
+                Console.WriteLine($"[Error] Failed to join vc , {e}");
+                result.JoinState = JoinState.Fail;
+                result.ToUserState = JoinToUserState.Unknown;
+                result.VC = null;
+                return result;
+            }
+        }
+
+        public static async Task DeferResponse<T>(T context , DisplayOption display) where T : IInteractionContext
+        {
+            await DeferResponse(context.Interaction,display);
+        }
+
+        public static async Task DeferResponse(Interaction interaction , DisplayOption display)
+        {
+            var callback = InteractionCallback.DeferredMessage(display.ToEphemeralFlag());
+            await interaction.SendResponseAsync(callback);
+        }
+
+
         /// <summary>
         /// Handle join/move for prefix commands.
         /// Returns:
@@ -26,82 +106,83 @@ namespace DiscordBot
         ///  1: moved to user's channel
         ///  2: joined to user's channel
         /// </summary>
-        public static async Task<int> FromContextJoin(SocketCommandContext ctx)
-        {
-            var user = ctx.User as IGuildUser;
-            var userVoice = user?.VoiceChannel;
-            var botVoice = (ctx.Guild.CurrentUser as IGuildUser)?.VoiceChannel;
+        //public static async Task<int> FromContextJoin(SocketCommandContext ctx)
+        //{
+        //    var user = ctx.User as IGuildUser;
+        //    var userVoice = user?.VoiceChannel;
+        //    var botVoice = (ctx.Guild.CurrentUser as IGuildUser)?.VoiceChannel;
 
-            if (userVoice == null && botVoice == null)
-                return -1;
+        //    if (userVoice == null && botVoice == null)
+        //        return -1;
 
-            if (botVoice != null)
-            {
-                if (botVoice.Id == userVoice.Id)
-                    return 0;
-                if (userVoice == null)
-                    return -2;
-                await botVoice.DisconnectAsync();
-                await userVoice.ConnectAsync();
-                return 1;
-            }
+        //    if (botVoice != null)
+        //    {
+        //        if (botVoice.Id == userVoice.Id)
+        //            return 0;
+        //        if (userVoice == null)
+        //            return -2;
+        //        await botVoice.DisconnectAsync();
+        //        await userVoice.ConnectAsync();
+        //        return 1;
+        //    }
 
-            if (userVoice != null)
-            {
-                await userVoice.ConnectAsync();
-                return 2;
-            }
-            return -1;
-        }
+        //    if (userVoice != null)
+        //    {
+        //        await userVoice.ConnectAsync();
+        //        return 2;
+        //    }
+        //    return -1;
+        //}
 
-        /// <summary>
-        /// Handle join/move for prefix commands.
-        /// Returns:
-        /// -2: user not in voice, but bot is
-        /// -1: user & bot not in voice
-        ///  0: already in same channel
-        ///  1: moved to user's channel
-        ///  2: joined to user's channel
-        /// </summary>
-        public static async Task<int> FromInteractionJoin(SocketInteractionContext intctx)
-        {
-            var user = intctx.User as IGuildUser;
-            var userVoice = user?.VoiceChannel;
-            var botVoice = (intctx.Guild.CurrentUser as IGuildUser)?.VoiceChannel;
+        ///// <summary>
+        ///// Handle join/move for prefix commands.
+        ///// Returns:
+        ///// -2: user not in voice, but bot is
+        ///// -1: user & bot not in voice
+        /////  0: already in same channel
+        /////  1: moved to user's channel
+        /////  2: joined to user's channel
+        ///// </summary>
+        //public static async Task<int> FromInteractionJoin(SocketInteractionContext intctx)
+        //{
+        //    var user = intctx.User as IGuildUser;
+        //    var userVoice = user?.VoiceChannel;
+        //    var botVoice = (intctx.Guild.CurrentUser as IGuildUser)?.VoiceChannel;
 
-            if (userVoice == null && botVoice == null)
-                return -1;
+        //    if (userVoice == null && botVoice == null)
+        //        return -1;
 
-            if (botVoice != null)
-            {
-                if (userVoice == null)
-                    return -2;
+        //    if (botVoice != null)
+        //    {
+        //        if (userVoice == null)
+        //            return -2;
 
-                if (botVoice.Id == userVoice.Id)
-                    return 0;
+        //        if (botVoice.Id == userVoice.Id)
+        //            return 0;
 
-                await botVoice.DisconnectAsync(); 
-                var audioClient = await userVoice.ConnectAsync();
-                GlobalVariable.serverAudioClientMap[intctx.Guild.Id] = audioClient;
-                return 1;
-            }
+        //        await botVoice.DisconnectAsync();
 
-            if (userVoice != null)
-            {
-                var audioClient = await userVoice.ConnectAsync();
-                GlobalVariable.serverAudioClientMap[intctx.Guild.Id] = audioClient;
-                return 2;
-            }
+        //        var audioClient = await userVoice.ConnectAsync();
+        //        GlobalVariable.serverAudioClientMap[intctx.Guild.Id] = audioClient;
+        //        return 1;
+        //    }
 
-            return -1;
-        }
+        //    if (userVoice != null)
+        //    {
+        //        var audioClient = await userVoice.ConnectAsync();
+        //        GlobalVariable.serverAudioClientMap[intctx.Guild.Id] = audioClient;
+        //        return 2;
+        //    }
 
-        public static async Task DisconnectFromSVC(SocketVoiceChannel svc)
-        {
-            if (svc == null)
-                return;
-            await svc.DisconnectAsync();
-        }
+        //    return -1;
+        //}
+
+        //public static async Task DisconnectFromSVC(SocketVoiceChannel svc)
+        //{
+        //    if (svc == null)
+        //        return;
+        //    await svc.DisconnectAsync();
+        //}
 
         public static string GenerateHashCode(int length)
         {
@@ -123,16 +204,16 @@ namespace DiscordBot
 
             int index = target.IndexOf(input);
             if (index != -1)
-                confidence += Math.Max(0d , 0.8d - (index * 0.01d));
+                confidence += Math.Max(0d, 0.8d - (index * 0.01d));
 
-            return 0.5d * confidence + Utils.LevenshteinSimilarity(input,target);
+            return 0.5d * confidence + Utils.LevenshteinSimilarity(input, target);
         }
 
 
         public static T GetRandomEnumValue<T>() where T : Enum
         {
             var values = Enum.GetValues(typeof(T));
-            return  (T)values.GetValue(randSeed.Next(values.Length));
+            return (T)values.GetValue(randSeed.Next(values.Length));
         }
 
         public static double LevenshteinSimilarity(string s1, string s2)
@@ -161,7 +242,7 @@ namespace DiscordBot
             return maxLen == 0 ? 1.0 : 1.0 - (double)distance / maxLen;
         }
 
-        public static void Swap<T>(ref T t1 , ref T t2)
+        public static void Swap<T>(ref T t1, ref T t2)
         {
             T tmp = t1;
             t1 = t2;
@@ -232,9 +313,9 @@ namespace DiscordBot
 
     }
 
-    public struct Pair<T1,T2>
+    public struct Pair<T1, T2>
     {
-        public T1 Item1 { get; set;}
+        public T1 Item1 { get; set; }
         public T2 Item2 { get; set; }
 
         public object this[int idx]
@@ -265,11 +346,11 @@ namespace DiscordBot
         }
     }
 
-    public class RefPair<T1,T2>
+    public class RefPair<T1, T2>
     {
-        private Pair<T1,T2> _pair;
+        private Pair<T1, T2> _pair;
 
-        public RefPair(T1 t1 , T2 t2)
+        public RefPair(T1 t1, T2 t2)
         {
             this._pair.Item1 = t1;
             this._pair.Item2 = t2;
@@ -322,9 +403,9 @@ namespace DiscordBot
         public static void Shuffle<T>(this IList<T> lst)
         {
             int count = lst.Count;
-            for (int i = count -1 ; i > 0; i--)
+            for (int i = count - 1; i > 0; i--)
             {
-                int swapIndex = Utils.RandInt(0,i+1);
+                int swapIndex = Utils.RandInt(0, i + 1);
                 (lst[i], lst[swapIndex]) = (lst[swapIndex], lst[i]);
             }
         }
