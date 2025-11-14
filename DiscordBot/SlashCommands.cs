@@ -2,6 +2,7 @@
 using Humanizer;
 using NetCord;
 using NetCord.Gateway;
+using NetCord.Gateway.Voice;
 using NetCord.Hosting.Services.ApplicationCommands;
 using NetCord.Rest;
 using NetCord.Services;
@@ -30,7 +31,11 @@ public class SlashCommands : ApplicationCommandModule<ApplicationCommandContext>
                 return (false, joinResult);
             }
             else
+            {
+                await joinResult.VC.EnterSpeakingStateAsync(new SpeakingProperties(SpeakingFlags.Microphone));
                 return (true, joinResult);
+            }
+                
         }
         catch
         {
@@ -162,12 +167,18 @@ public class SlashCommands : ApplicationCommandModule<ApplicationCommandContext>
     [SlashCommand("開源", $"我超 盒")]
     public async Task Credicts()
     {
-        await Context.Interaction.SendFollowupMessageAsync(
-            $"目前執行中的{GlobalVariable.botName}由C# dotnet9.0建構(NetCord)，版本 : {GlobalVariable.version}" + Environment.NewLine +
-            $"Github url (Discord.Net): {GlobalVariable.gitUrl}" + Environment.NewLine +
-            $"Github url (NetCord): {GlobalVariable.gitUrl2}" + Environment.NewLine +
-            $"All Credicts to {Utils.MentionWithID(GlobalVariable.creatorID)}"
-            );
+        await Utils.DeferResponse(Context,DisplayOption.Display);
+
+        var message = new InteractionMessageProperties()
+        {
+            Content = $"目前執行中的{GlobalVariable.botName}由C# dotnet9.0建構(NetCord)，版本 : {GlobalVariable.version}" + Environment.NewLine +
+                      $"Github url (Discord.Net): {GlobalVariable.gitUrl}" + Environment.NewLine +
+                      $"Github url (NetCord): {GlobalVariable.gitUrl2}" + Environment.NewLine +
+                        $"All Credicts to {Utils.MentionWithID(GlobalVariable.creatorID)}",
+            Flags = MessageFlags.SuppressEmbeds 
+        };
+
+        await Context.Interaction.SendFollowupMessageAsync(message);
     }
 
     [SlashCommand("原神體力", $"原神啟動")]

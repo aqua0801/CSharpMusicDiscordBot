@@ -252,10 +252,11 @@ namespace DiscordBot
             using var output = ffmpeg.StandardOutput.BaseStream;
             await vc.EnterSpeakingStateAsync(new SpeakingProperties(SpeakingFlags.Microphone));
             var outStream = vc.CreateOutputStream();
-
+            OpusEncodeStream stream = new(outStream, PcmFormat.Short, VoiceChannels.Stereo, OpusApplication.Audio);
+    
             try
             {
-                await output.CopyToAsync(outStream);
+                await output.CopyToAsync(stream);
             }
             catch (Exception e)
             {
@@ -263,8 +264,8 @@ namespace DiscordBot
             }
             finally
             {
-                await outStream.FlushAsync();
-                await outStream.DisposeAsync();
+                await stream.FlushAsync();
+                await stream.DisposeAsync();
             }
         }
 

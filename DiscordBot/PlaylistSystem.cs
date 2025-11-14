@@ -7,6 +7,7 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
 using NetCord.Rest;
+using NetCord.Services.ComponentInteractions;
 
 namespace DiscordBot
 {
@@ -164,12 +165,14 @@ namespace DiscordBot
                     byte[] buffer = new byte[3840];
                     int bytesRead;
 
+                    OpusEncodeStream stream = new(this._discordStream, PcmFormat.Short, VoiceChannels.Stereo, OpusApplication.Audio);
+
                     while ((bytesRead = await this._currentBufferedAudio.ReadAsync(buffer, 0, buffer.Length, _cts.Token)) > 0 || this._isPaused)
                     {
-                        if (!this._isPaused) await this._discordStream.WriteAsync(buffer.AsMemory(0, bytesRead), this._cts.Token);
+                        if (!this._isPaused) await stream.WriteAsync(buffer.AsMemory(0, bytesRead), this._cts.Token);
                     }
                     this._currentBufferedAudio.Dispose();
-                    await this._discordStream.FlushAsync();
+                    await stream.FlushAsync();
                 }
                 finally
                 {
@@ -211,8 +214,8 @@ namespace DiscordBot
                     await _message.ModifyAsync(msg =>
                     {
                         msg.Embeds = new[]{this.BuildTrackEmbed()};
-                        msg.Components = new []{ ButtonHelper.CreateView(this)};
-                        msg.Flags = MessageFlags.SuppressNotifications;
+                        //msg.Components = new []{ ButtonHelper.CreateView(this)};
+                        //msg.Flags = MessageFlags.SuppressNotifications;
                     });
                 }
                 catch (Exception e)
@@ -317,6 +320,7 @@ namespace DiscordBot
         public static async Task OnComponentExecuted(ButtonInteraction interaction)
         {
             var id = interaction.Data.CustomId;
+            var callback = InteractionCallback.DeferredModifyMessage;
 
             if (id.StartsWith("pause_resume_"))
             {
@@ -324,7 +328,7 @@ namespace DiscordBot
                 var playlist = PlaylistSystem.GetPlaylist(guildId);
                 if (playlist != null)
                     await playlist.onButtonPauseResume();
-                await Utils.DeferResponse(interaction,DisplayOption.Hide);
+                await interaction.SendResponseAsync(callback);
             }
             else if (id.StartsWith("skip_"))
             {
@@ -332,7 +336,7 @@ namespace DiscordBot
                 var playlist = PlaylistSystem.GetPlaylist(guildId);
                 if (playlist != null)
                     await playlist.onButtonSkip();
-                await Utils.DeferResponse(interaction, DisplayOption.Hide);
+                await interaction.SendResponseAsync(callback);
             }
             else if (id.StartsWith("stop_"))
             {
@@ -340,7 +344,7 @@ namespace DiscordBot
                 var playlist = PlaylistSystem.GetPlaylist(guildId);
                 if (playlist != null)
                     await playlist.onButtonStop();
-                await Utils.DeferResponse(interaction, DisplayOption.Hide);
+                await interaction.SendResponseAsync(callback);
             }
             else if (id.StartsWith("loop_"))
             {
@@ -348,10 +352,10 @@ namespace DiscordBot
                 var playlist = PlaylistSystem.GetPlaylist(guildId);
                 if (playlist != null)
                     await playlist.onButtonRepeat();
-                await Utils.DeferResponse(interaction, DisplayOption.Hide);
+                await interaction.SendResponseAsync(callback);
             }
         }
-
+        
     }
 
     public class ConcurrentPlaylistSystem

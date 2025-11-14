@@ -1,4 +1,5 @@
 ﻿using NetCord.Gateway;
+using NetCord.Gateway.Voice;
 using Newtonsoft.Json.Linq;
 
 using System.Collections.Concurrent;
@@ -32,7 +33,7 @@ namespace DiscordBot
         public static GatewayClient client;
 
         public static ConcurrentPlaylistSystem concurrentPlaylist = new ConcurrentPlaylistSystem(GlobalVariable.playlistJsonFilePath, true);
-        //public static ConcurrentDictionary<ulong, IAudioClient> serverAudioClientMap = new ConcurrentDictionary<ulong, IAudioClient>();
+        public static ConcurrentDictionary<ulong, VoiceClient> serverVoiceClientMap = new ConcurrentDictionary<ulong, VoiceClient>();
         public static HoyoLabService hoyoLab = new HoyoLabService();
         public static List<int> serverTierUploadFileSize;
 

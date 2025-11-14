@@ -68,9 +68,20 @@ namespace DiscordBot
 
             try
             {
-                var vc = await GlobalVariable.client.JoinVoiceChannelAsync(guild.Id, vcID.Value);
-                await vc.StartAsync();
-                result.VC = vc;
+                if(result.ToUserState == JoinToUserState.AlreadyInSameVC)
+                {
+                    if (GlobalVariable.serverVoiceClientMap.TryGetValue(guild.Id, out var vc))
+                        result.VC = vc;
+                }
+                
+                if(result.ToUserState != JoinToUserState.AlreadyInSameVC)
+                {
+                    var vc = await GlobalVariable.client.JoinVoiceChannelAsync(guild.Id, vcID.Value);
+                    await vc.StartAsync();
+                    result.VC = vc;
+                    GlobalVariable.serverVoiceClientMap.AddOrUpdate(guild.Id,_=>vc,(_,_)=>vc);
+                }
+
                 result.JoinState = JoinState.Success;
 
                 return result;

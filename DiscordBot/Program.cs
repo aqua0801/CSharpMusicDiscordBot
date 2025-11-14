@@ -48,7 +48,10 @@ void LoopSetGameAsync()
             Activities = new[] {new UserActivityProperties
             (
                 $"{GlobalVariable.botNickname}在{DateTime.Now:HH:mm}撿了{Utils.RandInt(0, 9999)}個石頭！", UserActivityType.Custom
-            )}
+            )
+            {
+                State = $"{GlobalVariable.botNickname}在{DateTime.Now:HH:mm}撿了{Utils.RandInt(0, 9999)}個石頭！"
+            }}
         });   
 
     }, null, TimeSpan.FromSeconds(1), TimeSpan.FromMinutes(1));
