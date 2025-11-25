@@ -12,6 +12,17 @@ namespace DiscordBot
 {
     public class BilibiliDownloader
     {
+        private struct UrlSourceInfo
+        {
+            public string Title { get; set; } = "未知";
+            public string Author { get; set; } = "未知";
+
+            public string Url { get; set; } = "-1";
+            public UrlSourceInfo() 
+            {
+            }
+        }
+
         private readonly HttpClient _httpClient;
         private readonly string _downloadPath = GlobalVariable.downloadFolderPath;
         //private readonly string[] _supportedExtensions = { "mp3", "mp4" };
@@ -53,7 +64,6 @@ namespace DiscordBot
         }
 
 
-
         public async Task<string?> DownloadAsync(string url, ExtensionOption extension)
         {
             if (extension == ExtensionOption.Audio)
@@ -82,12 +92,13 @@ namespace DiscordBot
                 //                   Path.Combine(_downloadPath, audioResult),
                 //                   outputPath);
 
-                var (videoUrl, title) = await this.GetFileUrlAsync(url, "mp4");
-                var (audioUrl, _) = await this.GetFileUrlAsync(url, "mp3");
+                var videoInfo = await this.GetFileUrlAsync(url, "mp4");
+                videoInfo.Title = SanitizeFileName(videoInfo.Title);
+                var audioInfo = await this.GetFileUrlAsync(url, "mp3");
 
-                string outputPath = Path.Combine(_downloadPath, $"{title}.mp4");
+                string outputPath = Path.Combine(_downloadPath, $"{videoInfo.Title}.mp4");
 
-                if (await MediaValidator.DownloadAndMergeMediaAsync(videoUrl, audioUrl, outputPath, MediaValidator.ConvertHttpClientToFfmpegHeaderArg(this._httpClient)))
+                if (await MediaValidator.DownloadAndMergeMediaAsync(videoInfo.Url, audioInfo.Url, outputPath, MediaValidator.ConvertHttpClientToFfmpegHeaderArg(this._httpClient)))
                 {
                     return outputPath;
                 }
@@ -99,16 +110,16 @@ namespace DiscordBot
 
         public async Task<MediaProcess.AudioInfo?> GetBilibililStreamUrlAsync(string url)
         {
-            string fileUrl = "", title = "解析錯誤";
             TimeSpan? durationTimespan = null;
             string header = "";
+            UrlSourceInfo info = default;
 
             for (int i = 0; i < this._retryLimit; i++)
             {
-                (fileUrl, title) = await GetFileUrlAsync(url, "mp3");
+                info = await GetFileUrlAsync(url, "mp3");
                 header = MediaValidator.ConvertHttpClientToFfmpegHeaderArg(this._httpClient);
-                durationTimespan = await MediaProcess.GetAudioDurationAsync(fileUrl, header);
-                if (fileUrl != "-1")
+                durationTimespan = await MediaProcess.GetAudioDurationAsync(info.Url, header);
+                if (info.Url != "-1")
                     break;
             }
 
@@ -118,10 +129,10 @@ namespace DiscordBot
 
             return new MediaProcess.AudioInfo()
             {
-                Title = title,
-                Creator = "Bilibili創作者解析懶得寫",
+                Title = info.Title,
+                Creator = info.Author,
                 Duration = duraion,
-                Url = fileUrl,
+                Url = info.Url,
                 FfmpegHeaderAugment = header
             };
         }
@@ -129,9 +140,8 @@ namespace DiscordBot
 
         public async IAsyncEnumerable<byte[]> GetChunksAsync(string url)
         {
-
-            var (fileUrl, _) = await GetFileUrlAsync(url, "mp3");
-            var stream = await _httpClient.GetStreamAsync(fileUrl);
+            var info = await GetFileUrlAsync(url, "mp3");
+            var stream = await _httpClient.GetStreamAsync(info.Url);
             var buffer = new byte[8192];
             int read;
             while ((read = await stream.ReadAsync(buffer)) > 0)
@@ -146,18 +156,18 @@ namespace DiscordBot
             {
                 try
                 {
-                    var (fileUrl, title) = await GetFileUrlAsync(url, extension);
-                    if (fileUrl == "-1")
+                    var info = await GetFileUrlAsync(url, extension);
+                    if (info.Url == "-1")
                     {
                         Console.WriteLine("[Error] Unable to extract source url !");
                         return "not found";
                     }
 
-                    var response = await _httpClient.GetAsync(fileUrl);
+                    var response = await _httpClient.GetAsync(info.Url);
                     if (!response.IsSuccessStatusCode) continue;
 
-                    title = SanitizeFileName(title);
-                    var fileName = $"{title}.{extension}";
+                    info.Title = SanitizeFileName(info.Title);
+                    var fileName = $"{info.Title}.{extension}";
                     var filePath = Path.Combine(_downloadPath, fileName);
                     await using var fs = new FileStream(filePath, FileMode.Create);
                     await response.Content.CopyToAsync(fs);
@@ -173,7 +183,7 @@ namespace DiscordBot
             return "not found";
         }
 
-        private async Task<(string fileUrl, string title)> GetFileUrlAsync(string url, string extension)
+        private async Task<UrlSourceInfo> GetFileUrlAsync(string url, string extension)
         {
             this.RefreshUserAgent();
             string ua = this.GetCurrentUserAgent();
@@ -186,7 +196,7 @@ namespace DiscordBot
             var playInfo = JsonConvert.DeserializeObject<JObject>(playInfoMatch.Groups[1].Value);
 
             if (playInfo == null)
-                return ("-1", "-1");
+                return default;
 
             string videoUrl = "-1";
             string audioUrl = "-1";
@@ -240,33 +250,44 @@ namespace DiscordBot
                 }
             }
 
-            string title = ExtractTitleFromHtml(html);
+            var info = ExtractTitleAuthorFromHtml(html);
 
-            if (extension == "mp4") return (videoUrl, title);
-            return (audioUrl, title);
+            if (extension == "mp4") info.Url = videoUrl;
+            else info.Url = audioUrl;
+            return info;
         }
 
-        public static string ExtractTitleFromHtml(string html)
+        private static UrlSourceInfo ExtractTitleAuthorFromHtml(string html)
         {
             string pattern = @"__INITIAL_STATE__=(.*?);\(function\(\)";
             var match = Regex.Match(html, pattern);
-            if (!match.Success)
+
+            var info = new UrlSourceInfo();
+
+            if (match.Success)
             {
-                return "未知";
+                string jsonString = match.Groups[1].Value;
+
+                using var doc = JsonDocument.Parse(jsonString);
+                var root = doc.RootElement;
+
+                if (root.TryGetProperty("videoData", out var videoData) &&
+                    videoData.TryGetProperty("title", out var titleProp))
+                {
+                    info.Title = titleProp.GetString() ?? "未知";
+
+                    if (videoData.TryGetProperty("owner", out var authorData)
+                        && authorData.TryGetProperty("name", out var name))
+                    {
+                        info.Author = name.GetString() ?? "未知";
+                    }
+                }
+
             }
 
-            string jsonString = match.Groups[1].Value;
+            Console.WriteLine(info.Author);
 
-            using var doc = JsonDocument.Parse(jsonString);
-            var root = doc.RootElement;
-
-            if (root.TryGetProperty("videoData", out var videoData) &&
-                videoData.TryGetProperty("title", out var titleProp))
-            {
-                return titleProp.GetString() ?? "未知";
-            }
-
-            return "未知";
+            return info;
         }
 
         public async Task<string> GetStringWithEncodingAsync(string url, Encoding defaultEncoding)
@@ -291,7 +312,7 @@ namespace DiscordBot
             return encoding.GetString(contentBytes);
         }
 
-        private string SanitizeFileName(string name)
+        private static string SanitizeFileName(string name)
         {
             var invalid = Path.GetInvalidFileNameChars();
             return string.Concat(name.Select(c => invalid.Contains(c) ? ' ' : c));

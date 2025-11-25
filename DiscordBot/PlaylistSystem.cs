@@ -1,13 +1,14 @@
 ﻿using NetCord;
 using NetCord.Gateway;
 using NetCord.Gateway.Voice;
+using NetCord.Rest;
+using NetCord.Services.ComponentInteractions;
 using Newtonsoft.Json.Linq;
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
-using NetCord.Rest;
-using NetCord.Services.ComponentInteractions;
+using YoutubeExplode.Channels;
 
 namespace DiscordBot
 {
@@ -16,9 +17,9 @@ namespace DiscordBot
         public static readonly int UPDATE_INTERVAL_SECOND = 6;
         private static ConcurrentDictionary<ulong, Playlist> _playlists = new ConcurrentDictionary<ulong, Playlist>();
 
-        public static Playlist GetorCreatePlaylist(Guild guild, VoiceClient vc)
+        public static Playlist GetorCreatePlaylist(Guild guild, VoiceClient vc , ulong channelId)
         {
-            return _playlists.GetOrAdd(guild.Id, _ => new Playlist(guild, vc));
+            return _playlists.GetOrAdd(guild.Id, _ => new Playlist(guild, vc , channelId));
         }
 
         public static Playlist? GetPlaylist(ulong id)
@@ -36,39 +37,43 @@ namespace DiscordBot
         {
             //await Task.Run(() =>
             //{
-            //    Timer loopCheckTimer = new Timer(async _ =>
-            //    {
-            //        try
-            //        {
-            //            ulong[] ids = PlaylistSystem._playlists.Keys.ToArray();
+                //Timer loopCheckTimer = new Timer(async _ =>
+                //{
+                //    try
+                //    {
+                //        ulong[] ids = PlaylistSystem._playlists.Keys.ToArray();
 
-            //            foreach (ulong id in ids)
-            //            {
-            //                Playlist playlist = PlaylistSystem._playlists[id];
-            //                if (playlist._vc == null || playlist._vc.Status != WebSocketStatus.Connecting)
-            //                {
-            //                    await playlist.Finish();
-            //                }
-            //                else
-            //                {
-            //                    if (playlist._svc != null && playlist._svc.ConnectedUsers.Where(user => !user.IsBot).Count() < 1)
-            //                    {
-            //                        await playlist._message.Channel.SendMessageAsync($"{GlobalVariable.botNickname}偵測到語音裡沒有人，我要退出苦來西苦！");
-            //                        await playlist.Finish();
-            //                        await Utils.DisconnectFromSVC(playlist._svc);
-            //                    }
+                //        foreach (ulong id in ids)
+                //        {
+                //            Playlist playlist = PlaylistSystem._playlists[id];
+                //            if (playlist._vc == null || playlist._vc.Status != WebSocketStatus.Connecting)
+                //            {
+                //                await playlist.Finish();
+                //            }
+                //            else
+                //            {
+                //                if (playlist._vc != null)
+                //                {
+                //                    var channel = await GlobalVariable.client.Rest.GetChannelAsync(playlist.channelId) as VoiceGuildChannel;
 
-            //                }
-            //            }
-            //        }
-            //        catch (Exception e)
-            //        {
-            //            Console.WriteLine($"[Erro][LoopCheck] {e}");
-            //        }
+                                    
 
-            //    }, null, TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5));
+                //                    await playlist._message.Channel.SendMessageAsync($"{GlobalVariable.botNickname}偵測到語音裡沒有人，我要退出苦來西苦！");
+                //                    await playlist.Finish();
+                //                    await Utils.DisconnectFromSVC(playlist._svc);
+                //                }
 
-            //    GlobalVariable.PermanentTimers.Add(loopCheckTimer);
+                //            }
+                //        }
+                //    }
+                //    catch (Exception e)
+                //    {
+                //        Console.WriteLine($"[Erro][LoopCheck] {e}");
+                //    }
+
+                //}, null, TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5));
+
+                //GlobalVariable.PermanentTimers.Add(loopCheckTimer);
             //});
 
         }
@@ -77,6 +82,7 @@ namespace DiscordBot
     public class Playlist
     {
         internal readonly Guild _guild;
+        internal readonly ulong channelId;
         internal readonly VoiceClient _vc;
         internal readonly List<Tuple<WebOption, string>> _urls = new List<Tuple<WebOption, string>>();
         internal int _playingIndex = 0;
@@ -95,11 +101,13 @@ namespace DiscordBot
         internal Process? _ffmpeg;
         internal CancellationTokenSource _cts = new CancellationTokenSource();
 
-        public Playlist(Guild guild, VoiceClient vc)
+        public Playlist(Guild guild, VoiceClient vc , ulong channelId)
         {
             this._guild = guild;
             this._vc = vc;
-            var guildBot = this._guild.GetUserAsync(GlobalVariable.botID).GetAwaiter().GetResult();
+            this.channelId = channelId;
+
+            //var guildBot = this._guild.GetUserAsync(GlobalVariable.botID).GetAwaiter().GetResult();
         }
 
         public void AddUrls(List<Tuple<WebOption, string>> urls)
@@ -167,9 +175,25 @@ namespace DiscordBot
 
                     OpusEncodeStream stream = new(this._discordStream, PcmFormat.Short, VoiceChannels.Stereo, OpusApplication.Audio);
 
-                    while ((bytesRead = await this._currentBufferedAudio.ReadAsync(buffer, 0, buffer.Length, _cts.Token)) > 0 || this._isPaused)
+                    while (true)
                     {
-                        if (!this._isPaused) await stream.WriteAsync(buffer.AsMemory(0, bytesRead), this._cts.Token);
+                        if (this._interrupt)
+                            break;
+
+                        if (!this._isPaused)
+                        {
+                            bytesRead = await this._currentBufferedAudio.ReadAsync(buffer, 0, buffer.Length, _cts.Token);
+
+                            if (bytesRead <= 0)
+                                break;
+
+                            if (bytesRead < buffer.Length)
+                            {
+                                Array.Clear(buffer, bytesRead, buffer.Length - bytesRead);
+                            }
+
+                            await stream.WriteAsync(buffer, this._cts.Token);
+                        }
                     }
                     this._currentBufferedAudio.Dispose();
                     await stream.FlushAsync();
@@ -261,7 +285,12 @@ namespace DiscordBot
                 await this._discordStream.DisposeAsync();
 
             if (this._message != null)
-                await this._message.ModifyAsync(msg => { msg.Content = "已結束/終止"; });
+                await this._message.ModifyAsync(msg => 
+                { 
+                    msg.Content = "已結束/終止";
+                    msg.Embeds = null;
+                    msg.Components = null;
+                });
 
             PlaylistSystem.RemovePlaylist(this._guild.Id);
         }

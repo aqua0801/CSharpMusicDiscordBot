@@ -1,4 +1,5 @@
 ﻿using NetCord;
+using NetCord.Gateway;
 using NetCord.Rest;
 
 public static class ExtensionMethods
@@ -22,27 +23,12 @@ public static class ExtensionMethods
         });
     }
 
-}
-
-
-public readonly struct DisplayedMessage
-{
-    public readonly string Content;
-    public readonly MessageFlags? Flags;
-
-    public DisplayedMessage(string content, DisplayOption display)
+    public static async Task LeaveVoiceChannel(this GatewayClient client , ulong guildId)
     {
-        Content = content;
-        Flags = display.ToEphemeralFlag();
+        await client.UpdateVoiceStateAsync(new VoiceStateProperties(guildId , null));
     }
 
-    public static implicit operator InteractionMessageProperties(DisplayedMessage msg)
-        => new InteractionMessageProperties
-        {
-            Content = msg.Content,
-            Flags = msg.Flags
-        };
 
-    public static implicit operator DisplayedMessage((string content, DisplayOption display) tuple)
-            => new DisplayedMessage(tuple.content, tuple.display);
 }
+
+

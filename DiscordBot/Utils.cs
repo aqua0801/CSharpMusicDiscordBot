@@ -11,6 +11,7 @@ using System;
 using System.Collections.Concurrent;
 using System.Linq;
 using System.Runtime.InteropServices;
+using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 
 namespace DiscordBot
@@ -29,6 +30,8 @@ namespace DiscordBot
         public JoinState JoinState { get; set; } = JoinState.Unknown;
 
         public VoiceClient VC;
+
+        public ulong ChannelID = 0x0000 ;
 
         public override string ToString()
         {
@@ -65,6 +68,8 @@ namespace DiscordBot
                 result.ToUserState = (bot.ChannelId.Value == vcID) ? JoinToUserState.AlreadyInSameVC : JoinToUserState.BotMoveToVC;
             else
                 result.ToUserState = JoinToUserState.BotJoinToVC;
+
+            result.ChannelID = vcID.Value;
 
             try
             {
@@ -105,6 +110,39 @@ namespace DiscordBot
         {
             var callback = InteractionCallback.DeferredMessage(display.ToEphemeralFlag());
             await interaction.SendResponseAsync(callback);
+        }
+
+        public static ReactionEmojiProperties TryCreateEmoji(string name)
+        {
+            ReactionEmojiProperties emoji = null;
+
+            if (name.Contains(':'))
+            {
+                var match = Regex.Match(name, @"^<a?:(?<name>[^:]+):(?<id>\d+)>$");
+
+                if (match.Success)
+                {
+                    name = match.Groups["name"].Value;
+                    ulong id = ulong.Parse(match.Groups["id"].Value);
+
+                    emoji = new ReactionEmojiProperties(name,id);
+                }
+            }
+            else
+                emoji = new ReactionEmojiProperties(name);
+
+            return emoji;
+        }
+
+        public static string ReactionEmojiToString(ReactionEmojiProperties emoji)
+        {
+            ulong? id = emoji.Id;
+            if (!id.HasValue)
+            {
+                return emoji.Name;
+            }
+
+            return $"<:{emoji.Name}:{id.GetValueOrDefault()}>";
         }
 
 

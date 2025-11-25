@@ -4,6 +4,7 @@ using NetCord.Gateway;
 using NetCord.Gateway.Voice;
 using NetCord.Gateway.Voice.Encryption;
 using NetCord.Logging;
+using NetCord.Rest;
 using NetCord.Services;
 using NetCord.Services.Commands;
 
@@ -33,12 +34,46 @@ public class PrefixCommands : CommandModule<CommandContext>
         var result = await Utils.JoinToUserVC(Context);
     }
 
-    //[Command("sync")]
-    //public async Task SyncCommands()
-    //{
-    //    await applicationservice
-    //    Console.WriteLine($"Slash commands registered , command count : {_interactionService.SlashCommands.Count} !");
-    //}
+    [Command("leave")]
+    public async Task Leave()
+    {
+        await GlobalVariable.client.LeaveVoiceChannel(Context.Guild.Id);
+    }
+
+    [Command("react")]
+    public async Task ReactAsync(ulong messageId, string emojiName)
+    {
+        try
+        {
+            var message = await Context.Channel.GetMessageAsync(messageId);
+            
+            if (message !=null)
+            {
+                var emoji = Utils.TryCreateEmoji(emojiName);
+
+                if (emoji != null)
+                {
+                    await message.AddReactionAsync(emoji);
+                    await ReplyAsync($"{GlobalVariable.botNickname}已使用{Utils.ReactionEmojiToString(emoji)}回覆！");
+                }
+                else
+                {
+                    await ReplyAsync($"{GlobalVariable.botNickname}用不了這個emoji！");
+                }
+
+            }
+            else
+            {
+                await ReplyAsync($"{GlobalVariable.botNickname}找不到該訊息！");
+            }
+        }
+        catch
+        {
+            await ReplyAsync($"{GlobalVariable.botNickname}找不到該emoji或是其他未知錯誤！");
+        }
+    }
+
+
 }
 
 

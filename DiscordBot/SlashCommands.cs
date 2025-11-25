@@ -57,7 +57,7 @@ public class SlashCommands : ApplicationCommandModule<ApplicationCommandContext>
         {
             var vc = result.VC;
 
-            var playlist = PlaylistSystem.GetorCreatePlaylist(Context.Guild, vc);
+            var playlist = PlaylistSystem.GetorCreatePlaylist(Context.Guild, vc , result.ChannelID);
             bool firstTrack = playlist._urls.Count == 0;
 
             var urlTupleList = new List<Tuple<WebOption, string>>()
@@ -93,7 +93,7 @@ public class SlashCommands : ApplicationCommandModule<ApplicationCommandContext>
         {
             var vc = result.VC;
 
-            var playlist = PlaylistSystem.GetorCreatePlaylist(Context.Guild, vc);
+            var playlist = PlaylistSystem.GetorCreatePlaylist(Context.Guild, vc , result.ChannelID);
             bool firstTrack = playlist._urls.Count == 0;
 
             var urlTupleList = new List<Tuple<WebOption, string>>()
@@ -129,7 +129,7 @@ public class SlashCommands : ApplicationCommandModule<ApplicationCommandContext>
         if (success)
         {
             var vc = result.VC;
-            var playlist = PlaylistSystem.GetorCreatePlaylist(Context.Guild, vc);
+            var playlist = PlaylistSystem.GetorCreatePlaylist(Context.Guild, vc, result.ChannelID);
             bool firstTrack = playlist._urls.Count == 0;
 
             var urls = await MediaProcess.GetPlaylistUrlsAsync(url);
@@ -243,8 +243,8 @@ public class SlashCommands : ApplicationCommandModule<ApplicationCommandContext>
         {
             var map = new[]
             {
-                        (GameType.Genshin,"Genshin"),(GameType.HonkaiStarRail,"Hsr"),(GameType.ZenlessZoneZero,"Zzz")
-                    };
+                (GameType.Genshin,"Genshin"),(GameType.HonkaiStarRail,"Hsr"),(GameType.ZenlessZoneZero,"Zzz")
+            };
 
             StringFormatting.StringFormatter sf = new StringFormatting.StringFormatter(StringFormatting.StringFormatter.PadAlign.Right, 100);
             sf.PaddingSpace = 2;
@@ -361,7 +361,7 @@ public class SlashCommands : ApplicationCommandModule<ApplicationCommandContext>
 
     [SlashCommand("新增刪除歌單", "選擇新增或是刪除歌單")]
     public async Task AddRemovePlaylist(
-        [SlashCommandParameter(AutocompleteProviderType = typeof(PlaylistAutocompleteHandler))] string text,
+        [SlashCommandParameter(Name = "歌單名稱" , AutocompleteProviderType = typeof(PlaylistAutocompleteHandler))] string text,
         [SlashCommandParameter(Name = "對應網址", Description = "新增歌單對應網址，刪除歌單不用填")] string url = "",
         [SlashCommandParameter(Name = "新增刪除", Description = "新增或刪除歌單")] AddRemoveOption addRemove = AddRemoveOption.Add,
         DisplayOption display = DisplayOption.Display
@@ -378,6 +378,25 @@ public class SlashCommands : ApplicationCommandModule<ApplicationCommandContext>
         ulong serverID = Context.Guild.Id;
 
         var serverPlaylists = GlobalVariable.concurrentPlaylist.GetPlaylists(serverID);
+
+        if (addRemove == AddRemoveOption.Modify)
+        {
+            if(String.IsNullOrEmpty(url) )
+            {
+                await Context.Interaction.SendFollowupMessageAsync($"修改歌單功能未填入對應網址！", display);
+            }
+            else if(!serverPlaylists.ContainsKey(text))
+            {
+                await Context.Interaction.SendFollowupMessageAsync($"修改歌單功能該歌單不存在！", display);
+            }
+            else
+            {
+                var cache = serverPlaylists[text];
+                serverPlaylists[text] = url;
+                await Context.Interaction.SendFollowupMessageAsync($"修改完成 : {text} : {cache} => {url}！", display);
+            }
+            return;
+        }
 
         if (addRemove == AddRemoveOption.Add)
         {
@@ -615,7 +634,9 @@ public enum AddRemoveOption
     [SlashCommandChoice(Name = "新增")]
     Add,
     [SlashCommandChoice(Name = "刪除")]
-    Remove
+    Remove,
+    [SlashCommandChoice(Name = "修改")]
+    Modify
 }
 
 public enum ExtensionOption

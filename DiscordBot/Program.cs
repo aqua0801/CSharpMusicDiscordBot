@@ -12,7 +12,6 @@ bool firstTimeReady = true;
 
 GlobalVariable.Init();
 
-
 GatewayClient client = new(new BotToken(GlobalVariable.botToken), new GatewayClientConfiguration
 {
     Logger = new ConsoleLogger(),
@@ -45,13 +44,14 @@ void LoopSetGameAsync()
     {
         await client.UpdatePresenceAsync(new PresenceProperties(UserStatusType.Online)
         {
-            Activities = new[] {new UserActivityProperties
-            (
-                $"{GlobalVariable.botNickname}在{DateTime.Now:HH:mm}撿了{Utils.RandInt(0, 9999)}個石頭！", UserActivityType.Custom
-            )
-            {
-                State = $"{GlobalVariable.botNickname}在{DateTime.Now:HH:mm}撿了{Utils.RandInt(0, 9999)}個石頭！"
-            }}
+            Activities = new[] {
+                new UserActivityProperties
+                (
+                    $"Status", UserActivityType.Custom
+                )
+                {
+                    State = $"{GlobalVariable.botNickname}在{DateTime.Now:HH:mm}負債了{Utils.RandInt(0, 9999)}億！"
+                }}
         });   
 
     }, null, TimeSpan.FromSeconds(1), TimeSpan.FromMinutes(1));
@@ -66,16 +66,20 @@ client.Ready += async (_) =>
         await GetBotInfo();
         await PlaylistSystem.LoopCheckVoiceChannelAndUsers();
         ImageAlgorithm.LoopCheckExpiredCache();
-
-        await Task.Run(async () =>
+        var a = MediaProcess.DetermineAudioUrlAlgorithm(WebOption.Bilibili);
+        if (GlobalVariable.resinLoopCheck)
         {
-            var loopcheck = new HoyoLabService();
-            loopcheck.LoopCheckResin(client, 190, TimeSpan.FromMinutes(30), GameType.Genshin);
-            await Task.Delay(200);
-            loopcheck.LoopCheckResin(client, 280, TimeSpan.FromMinutes(30), GameType.HonkaiStarRail);
-            await Task.Delay(200);
-            loopcheck.LoopCheckResin(client, 225, TimeSpan.FromMinutes(30), GameType.ZenlessZoneZero);
-        });
+            await Task.Run(async () =>
+            {
+                var loopcheck = new HoyoLabService();
+                loopcheck.LoopCheckResin(client, 190, TimeSpan.FromMinutes(30), GameType.Genshin);
+                await Task.Delay(200);
+                loopcheck.LoopCheckResin(client, 280, TimeSpan.FromMinutes(30), GameType.HonkaiStarRail);
+                await Task.Delay(200);
+                loopcheck.LoopCheckResin(client, 225, TimeSpan.FromMinutes(30), GameType.ZenlessZoneZero);
+            });
+        }
+
         LoopSetGameAsync();
         firstTimeReady = false;
         Console.WriteLine($"目前登入 : {user.Username}#{user.Discriminator}");
@@ -116,6 +120,16 @@ client.InteractionCreate += async interaction =>
         await applicationService.ExecuteAsync(new ApplicationCommandContext(applicationInteraction, client));
     else if (interaction is AutocompleteInteraction autoInteraction)
         await autocompleteService.ExecuteAutocompleteAsync(new AutocompleteInteractionContext(autoInteraction,client));
+};
+
+AppDomain.CurrentDomain.ProcessExit += async (s, e) =>
+{
+    foreach (var vc in GlobalVariable.serverVoiceClientMap.Values)
+    {
+        await client.LeaveVoiceChannel(vc.GuildId);
+    }
+    await client.CloseAsync();
+    client.Dispose();
 };
 
 await client.StartAsync();

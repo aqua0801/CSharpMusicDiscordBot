@@ -26,6 +26,7 @@ namespace DiscordBot
         public const string labelsFolderPath = ".\\Data\\Images\\labels\\";
         public static JObject envJsonObject = new JObject();
         public static char commandPrefix = '!';
+        public static bool resinLoopCheck = false;
 
         public static ulong botID;
         public static ulong creatorID;
@@ -50,6 +51,7 @@ namespace DiscordBot
             GlobalVariable.gitUrl2 = GlobalVariable.envJsonObject.GetValueOrDefault<string>("git_repo_link2");
             GlobalVariable.serverTierUploadFileSize = GlobalVariable.envJsonObject.GetValueOrDefault<List<int>>("server_tier_file_size");
             GlobalVariable.commandPrefix = GlobalVariable.envJsonObject.GetValueOrDefault<char>("prefix");
+            GlobalVariable.resinLoopCheck = GlobalVariable.envJsonObject.GetValueOrDefault<bool>("resin_loop_check");
         }
     }
 }
