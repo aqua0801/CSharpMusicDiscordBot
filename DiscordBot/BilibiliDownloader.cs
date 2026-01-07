@@ -133,7 +133,7 @@ namespace DiscordBot
                 Creator = info.Author,
                 Duration = duraion,
                 Url = info.Url,
-                FfmpegHeaderAugment = header
+                FfmpegHeaderArgument = header
             };
         }
 
@@ -389,9 +389,9 @@ namespace DiscordBot
                    (contentType.StartsWith("video/") || contentType.StartsWith("audio/"));
         }
 
-        private static async Task<bool> IsMediaSupportedEncoding(string url, string extension, string headerAugment)
+        private static async Task<bool> IsMediaSupportedEncoding(string url, string extension, string headerArgument)
         {
-            string encoding = await GetMediaEncoding(url, extension, headerAugment);
+            string encoding = await GetMediaEncoding(url, extension, headerArgument);
             if (encoding == "unsupported")
                 return false;
             return _supportedAudioCodecOptions.ContainsKey(encoding) || _supportedVideoCodecOptions.ContainsKey(encoding);
@@ -432,7 +432,7 @@ namespace DiscordBot
             { "amr-wb", "libamr_wb" }
         };
 
-        private static async Task<string> GetMediaEncoding(string url, string extension, string headerAugment)
+        private static async Task<string> GetMediaEncoding(string url, string extension, string headerArgument)
         {
             extension = extension.ToLowerInvariant();
 
@@ -442,11 +442,11 @@ namespace DiscordBot
             if (extensionOption == "unsupported")
                 return extensionOption;
 
-            string augment = $"-v error -select_streams {extensionOption} -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 {headerAugment} \"{url}\"";
+            string argument = $"-v error -select_streams {extensionOption} -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 {headerArgument} \"{url}\"";
             var processStartInfo = new ProcessStartInfo
             {
                 FileName = GlobalVariable.ffprobeExePath,
-                Arguments = augment,
+                Arguments = argument,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 UseShellExecute = false,
@@ -507,10 +507,10 @@ namespace DiscordBot
         }
 
 
-        public static async Task<bool> ConvertAndDownloadVideoAsync(string sourceUrl, string outputPath, string headerAugment)
+        public static async Task<bool> ConvertAndDownloadVideoAsync(string sourceUrl, string outputPath, string headerArgument)
         {
             var ffmpegPath = "ffmpeg";  // Path to ffmpeg executable
-            var arguments = $"{headerAugment} -i \"{sourceUrl}\" -c:v libx264 -crf 23 -preset fast -c:a aac -b:a 192k -f mp4 \"{outputPath}\"";
+            var arguments = $"{headerArgument} -i \"{sourceUrl}\" -c:v libx264 -crf 23 -preset fast -c:a aac -b:a 192k -f mp4 \"{outputPath}\"";
 
             var processStartInfo = new ProcessStartInfo
             {
@@ -540,9 +540,9 @@ namespace DiscordBot
             }
         }
 
-        public static async Task<bool> DownloadAndMergeMediaAsync(string videoUrl, string audioUrl, string outputPath, string headerAugment = "")
+        public static async Task<bool> DownloadAndMergeMediaAsync(string videoUrl, string audioUrl, string outputPath, string headerArgument = "")
         {
-            var argument = $"-y {headerAugment} -i \"{videoUrl}\" {headerAugment} -i \"{audioUrl}\" -c:v libx264 -crf 23 -preset fast -c:a aac -b:a 192k -f mp4 \"{outputPath}\"";
+            var argument = $"-y {headerArgument} -i \"{videoUrl}\" {headerArgument} -i \"{audioUrl}\" -c:v libx264 -crf 23 -preset fast -c:a aac -b:a 192k -f mp4 \"{outputPath}\"";
 
             var processStartInfo = new ProcessStartInfo
             {

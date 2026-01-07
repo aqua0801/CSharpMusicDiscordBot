@@ -174,7 +174,7 @@ public class SlashCommands : ApplicationCommandModule<ApplicationCommandContext>
             Content = $"目前執行中的{GlobalVariable.botName}由C# dotnet9.0建構(NetCord)，版本 : {GlobalVariable.version}" + Environment.NewLine +
                       $"Github url (Discord.Net): {GlobalVariable.gitUrl}" + Environment.NewLine +
                       $"Github url (NetCord): {GlobalVariable.gitUrl2}" + Environment.NewLine +
-                        $"All Credicts to {Utils.MentionWithID(GlobalVariable.creatorID)}",
+                      $"All Credicts to {Utils.MentionWithID(GlobalVariable.creatorID)}",
             Flags = MessageFlags.SuppressEmbeds 
         };
 
@@ -188,9 +188,10 @@ public class SlashCommands : ApplicationCommandModule<ApplicationCommandContext>
         ulong dcid = Context.User.Id;
         try
         {
-            var info = await GlobalVariable.hoyoLab.GetInfoAsyncByDiscordId(dcid.ToString(), GameType.Genshin);
+            var infos = await GlobalVariable.hoyoLab.GetInfoAsyncByDiscordId(dcid.ToString(), GameType.Genshin);
 
-            await this.FollowupHoyolabInfo(info, "旅行者");
+            foreach(var info in infos)
+                await this.FollowupHoyolabInfo(info.UserInfo, "旅行者");
         }
         catch
         {
@@ -206,9 +207,10 @@ public class SlashCommands : ApplicationCommandModule<ApplicationCommandContext>
         ulong dcid = Context.User.Id;
         try
         {
-            var info = await GlobalVariable.hoyoLab.GetInfoAsyncByDiscordId(dcid.ToString(), GameType.HonkaiStarRail);
+            var infos = await GlobalVariable.hoyoLab.GetInfoAsyncByDiscordId(dcid.ToString(), GameType.HonkaiStarRail);
 
-            await this.FollowupHoyolabInfo(info, "開拓者");
+            foreach(var info in infos)
+                await this.FollowupHoyolabInfo(info.UserInfo , "開拓者");
         }
         catch
         {
@@ -224,9 +226,10 @@ public class SlashCommands : ApplicationCommandModule<ApplicationCommandContext>
         ulong dcid = Context.User.Id;
         try
         {
-            var info = await GlobalVariable.hoyoLab.GetInfoAsyncByDiscordId(dcid.ToString(), GameType.ZenlessZoneZero);
+            var infos = await GlobalVariable.hoyoLab.GetInfoAsyncByDiscordId(dcid.ToString(), GameType.ZenlessZoneZero);
 
-            await this.FollowupHoyolabInfo(info, "繩匠");
+            foreach(var info in infos)
+                await this.FollowupHoyolabInfo(info.UserInfo, "繩匠");
         }
         catch
         {
@@ -251,14 +254,19 @@ public class SlashCommands : ApplicationCommandModule<ApplicationCommandContext>
 
             foreach (var set in map)
             {
-                var info = await GlobalVariable.hoyoLab.GetInfoAsyncByDiscordId(dcid.ToString(), set.Item1);
-                if (info != null && info.Status == CheckStatus.Success)
+                var infos = await GlobalVariable.hoyoLab.GetInfoAsyncByDiscordId(dcid.ToString(), set.Item1);
+
+                foreach(var info in infos)
                 {
-                    sf.AddStringTemps($"[{set.Item2}]", 0);
-                    sf.AddStringTemps($"[{info.CurrentResin}/{info.MaxResin}]", 1);
-                    sf.AddStringTemps($"[{info.MaxAt:yyyy-MM-dd HH:mm:ss}]", 2);
-                    sf.AddStringTemps($" [{info.Name}]");
-                    sf.NewLine();
+                    var uinfo = info.UserInfo;
+                    if (info != null && uinfo.Status == CheckStatus.Success)
+                    {
+                        sf.AddStringTemps($"[{set.Item2}]", 0);
+                        sf.AddStringTemps($"[{uinfo.CurrentResin}/{uinfo.MaxResin}]", 1);
+                        sf.AddStringTemps($"[{uinfo.GetDailyProgress()}]", 2);
+                        sf.AddStringTemps($"[{uinfo.Name}]");
+                        sf.NewLine();
+                    }
                 }
 
             }
@@ -279,6 +287,7 @@ public class SlashCommands : ApplicationCommandModule<ApplicationCommandContext>
         {
             await FollowupAsync($"嗚嗚嗚{GlobalVariable.botNickname}查詢失敗 !");
         }
+
     }
 
 
@@ -292,9 +301,11 @@ public class SlashCommands : ApplicationCommandModule<ApplicationCommandContext>
                 string remainingTime = (info.RecoveryTime >= TimeSpan.Zero) ?
                     $"剩餘 : {humanized}" :
                     $"超出 : {humanized}";
+                string dailyString = (info.IsDailyDone()) ? "已完成" : "未完成";
 
                 await FollowupAsync(
                     $"{callname} : {info.Name}{Environment.NewLine}" +
+                    $"每日進度 : {info.GetDailyProgress()} [{dailyString}]{Environment.NewLine}"+
                     $"目前體力 : {info.CurrentResin}/{info.MaxResin}{Environment.NewLine}" +
                     $"預計滿體力時間 : {info.MaxAt:yyyy-MM-dd HH:mm:ss}{Environment.NewLine}" +
                     $"{remainingTime}");

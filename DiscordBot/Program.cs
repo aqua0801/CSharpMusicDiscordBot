@@ -77,6 +77,8 @@ client.Ready += async (_) =>
                 loopcheck.LoopCheckResin(client, 280, TimeSpan.FromMinutes(30), GameType.HonkaiStarRail);
                 await Task.Delay(200);
                 loopcheck.LoopCheckResin(client, 225, TimeSpan.FromMinutes(30), GameType.ZenlessZoneZero);
+                await Task.Delay(200);
+                loopcheck.LoopCheckDailyDone(client,new TimeOnly(0,0,0) , new[] {GameType.Genshin , GameType.HonkaiStarRail , GameType.ZenlessZoneZero });
             });
         }
 

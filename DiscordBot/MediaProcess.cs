@@ -40,7 +40,7 @@ namespace DiscordBot
             public string Url { get; set; }
             public float Duration { get; set; }
 
-            public string FfmpegHeaderAugment { get; set; } = "";
+            public string FfmpegHeaderArgument { get; set; } = "";
         }
 
 
@@ -142,12 +142,12 @@ namespace DiscordBot
             };
         }
 
-        public static async Task<TimeSpan?> GetAudioDurationAsync(string url, string headerAugment)
+        public static async Task<TimeSpan?> GetAudioDurationAsync(string url, string headerArgument)
         {
             var psi = new ProcessStartInfo
             {
                 FileName = "ffprobe",
-                Arguments = $"-v quiet -print_format json -show_format {headerAugment} -i \"{url}\"",
+                Arguments = $"-v quiet -print_format json -show_format {headerArgument} -i \"{url}\"",
                 RedirectStandardOutput = true,
                 UseShellExecute = false,
                 CreateNoWindow = true
@@ -174,7 +174,7 @@ namespace DiscordBot
             var ffmpeg = new ProcessStartInfo
             {
                 FileName = GlobalVariable.ffmpegExePath,
-                Arguments = $"-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 {audioInfo.FfmpegHeaderAugment} -i \"{audioInfo.Url}\" -filter:a \"volume=0.25\" -vn -f s16le -ar 48000 -ac 2 pipe:1",
+                Arguments = $"-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 {audioInfo.FfmpegHeaderArgument} -i \"{audioInfo.Url}\" -filter:a \"volume=0.25\" -vn -f s16le -ar 48000 -ac 2 pipe:1",
                 UseShellExecute = false,
                 RedirectStandardOutput = true,
                 RedirectStandardError = false,
