@@ -285,8 +285,6 @@ namespace DiscordBot
 
             }
 
-            Console.WriteLine(info.Author);
-
             return info;
         }
 

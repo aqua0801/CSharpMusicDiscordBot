@@ -256,14 +256,15 @@ public class SlashCommands : ApplicationCommandModule<ApplicationCommandContext>
             {
                 var infos = await GlobalVariable.hoyoLab.GetInfoAsyncByDiscordId(dcid.ToString(), set.Item1);
 
-                foreach(var info in infos)
+                foreach (var info in infos)
                 {
                     var uinfo = info.UserInfo;
+                    var dailyProgress = uinfo.GetDailyProgress().ToColored(uinfo.IsDailyDone()?AnsiHelper.AnsiColor.Gray:AnsiHelper.AnsiColor.Red);
                     if (info != null && uinfo.Status == CheckStatus.Success)
                     {
                         sf.AddStringTemps($"[{set.Item2}]", 0);
                         sf.AddStringTemps($"[{uinfo.CurrentResin}/{uinfo.MaxResin}]", 1);
-                        sf.AddStringTemps($"[{uinfo.GetDailyProgress()}]", 2);
+                        sf.AddStringTemps($"[{dailyProgress}]", 2);
                         sf.AddStringTemps($"[{uinfo.Name}]");
                         sf.NewLine();
                     }
@@ -279,7 +280,7 @@ public class SlashCommands : ApplicationCommandModule<ApplicationCommandContext>
             }
             else
             {
-                infoText = $"```{infoText}```";
+                infoText = AnsiHelper.WrapAnsiBlock(infoText);
                 await FollowupAsync($"{infoText}");
             }
         }
@@ -396,13 +397,12 @@ public class SlashCommands : ApplicationCommandModule<ApplicationCommandContext>
             {
                 await Context.Interaction.SendFollowupMessageAsync($"修改歌單功能未填入對應網址！", display);
             }
-            else if(!serverPlaylists.ContainsKey(text))
+            else if(!serverPlaylists.TryGetValue(text,out var cache))
             {
                 await Context.Interaction.SendFollowupMessageAsync($"修改歌單功能該歌單不存在！", display);
             }
             else
             {
-                var cache = serverPlaylists[text];
                 serverPlaylists[text] = url;
                 await Context.Interaction.SendFollowupMessageAsync($"修改完成 : {text} : {cache} => {url}！", display);
             }

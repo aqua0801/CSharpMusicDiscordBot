@@ -39,7 +39,7 @@ namespace DiscordBot
         }
 
     }
-    public static class Utils
+    public static partial class Utils
     {
         public static Random randSeed = new Random();
 
@@ -112,13 +112,17 @@ namespace DiscordBot
             await interaction.SendResponseAsync(callback);
         }
 
+        [GeneratedRegex(@"^<a?:(?<name>[^:]+):(?<id>\d+)>$")]
+        private static partial Regex CustomEmojiRegex();
+
         public static ReactionEmojiProperties TryCreateEmoji(string name)
         {
             ReactionEmojiProperties emoji = null;
 
             if (name.Contains(':'))
             {
-                var match = Regex.Match(name, @"^<a?:(?<name>[^:]+):(?<id>\d+)>$");
+                //var match = Regex.Match(name, @"^<a?:(?<name>[^:]+):(?<id>\d+)>$");
+                var match = CustomEmojiRegex().Match(name);
 
                 if (match.Success)
                 {

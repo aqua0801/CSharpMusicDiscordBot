@@ -2,19 +2,15 @@
 using NetCord.Gateway;
 using NetCord.Gateway.Voice;
 using NetCord.Rest;
-using NetCord.Services.ComponentInteractions;
 using Newtonsoft.Json.Linq;
-using System;
 using System.Collections.Concurrent;
-using System.Collections.Generic;
 using System.Diagnostics;
-using YoutubeExplode.Channels;
 
 namespace DiscordBot
 {
     public class PlaylistSystem
     {
-        public static readonly int UPDATE_INTERVAL_SECOND = 6;
+        public const int UPDATE_INTERVAL_SECOND = 6;
         private static ConcurrentDictionary<ulong, Playlist> _playlists = new ConcurrentDictionary<ulong, Playlist>();
 
         public static Playlist GetorCreatePlaylist(Guild guild, VoiceClient vc , ulong channelId)
@@ -24,58 +20,12 @@ namespace DiscordBot
 
         public static Playlist? GetPlaylist(ulong id)
         {
-            if (_playlists.ContainsKey(id)) return _playlists[id];
-            return null;
+            return _playlists.TryGetValue(id,out var playlist)? playlist : null;
         }
 
         public static void RemovePlaylist(ulong guildId)
         {
             _playlists.TryRemove(guildId, out _);
-        }
-
-        public static async Task LoopCheckVoiceChannelAndUsers()
-        {
-            //await Task.Run(() =>
-            //{
-                //Timer loopCheckTimer = new Timer(async _ =>
-                //{
-                //    try
-                //    {
-                //        ulong[] ids = PlaylistSystem._playlists.Keys.ToArray();
-
-                //        foreach (ulong id in ids)
-                //        {
-                //            Playlist playlist = PlaylistSystem._playlists[id];
-                //            if (playlist._vc == null || playlist._vc.Status != WebSocketStatus.Connecting)
-                //            {
-                //                await playlist.Finish();
-                //            }
-                //            else
-                //            {
-                //                if (playlist._vc != null)
-                //                {
-                //                    var channel = await GlobalVariable.client.Rest.GetChannelAsync(playlist.channelId) as VoiceGuildChannel;
-
-                                    
-
-                //                    await playlist._message.Channel.SendMessageAsync($"{GlobalVariable.botNickname}偵測到語音裡沒有人，我要退出苦來西苦！");
-                //                    await playlist.Finish();
-                //                    await Utils.DisconnectFromSVC(playlist._svc);
-                //                }
-
-                //            }
-                //        }
-                //    }
-                //    catch (Exception e)
-                //    {
-                //        Console.WriteLine($"[Erro][LoopCheck] {e}");
-                //    }
-
-                //}, null, TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5));
-
-                //GlobalVariable.PermanentTimers.Add(loopCheckTimer);
-            //});
-
         }
     }
 
@@ -106,8 +56,6 @@ namespace DiscordBot
             this._guild = guild;
             this._vc = vc;
             this.channelId = channelId;
-
-            //var guildBot = this._guild.GetUserAsync(GlobalVariable.botID).GetAwaiter().GetResult();
         }
 
         public void AddUrls(List<Tuple<WebOption, string>> urls)
@@ -238,8 +186,6 @@ namespace DiscordBot
                     await _message.ModifyAsync(msg =>
                     {
                         msg.Embeds = new[]{this.BuildTrackEmbed()};
-                        //msg.Components = new []{ ButtonHelper.CreateView(this)};
-                        //msg.Flags = MessageFlags.SuppressNotifications;
                     });
                 }
                 catch (Exception e)
@@ -443,12 +389,6 @@ namespace DiscordBot
                 .ToDictionary();
         }
 
-
-        public bool Exist(ulong serverID, string name)
-        {
-            if (!this._playlist.ContainsKey(serverID)) return false;
-            return this._playlist[serverID].ContainsKey(name);
-        }
         public bool Exist(ulong serverID)
         {
             return this._playlist.ContainsKey(serverID);

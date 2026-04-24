@@ -64,7 +64,6 @@ client.Ready += async (_) =>
     {
         Console.WriteLine($"正在初始化參數與自檢測方法...");
         await GetBotInfo();
-        await PlaylistSystem.LoopCheckVoiceChannelAndUsers();
         ImageAlgorithm.LoopCheckExpiredCache();
         var a = MediaProcess.DetermineAudioUrlAlgorithm(WebOption.Bilibili);
         if (GlobalVariable.resinLoopCheck)
