@@ -1,5 +1,4 @@
-﻿using AngleSharp.Dom;
-using Newtonsoft.Json;
+﻿using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using System.Diagnostics;
 using System.Net.Http.Headers;
@@ -7,569 +6,393 @@ using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 
+namespace DiscordBot;
 
-namespace DiscordBot
+public class BilibiliDownloader
 {
-    public class BilibiliDownloader
+    private readonly record struct UrlSourceInfo(
+        string Title = "未知",
+        string Author = "未知",
+        string Url = "-1");
+
+    private const string DefaultReferer = "https://www.bilibili.com";
+
+    private readonly HttpClient _http;
+    private readonly string _downloadPath = GlobalVariable.DownloadFolderPath;
+    private readonly int _retryLimit = 2;
+
+    private static readonly string[] _userAgents =
     {
-        private struct UrlSourceInfo
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/112.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 Safari/537.36",
+    };
+
+    public BilibiliDownloader()
+    {
+        var handler = new HttpClientHandler
         {
-            public string Title { get; set; } = "未知";
-            public string Author { get; set; } = "未知";
+            AutomaticDecompression = System.Net.DecompressionMethods.GZip |
+                                     System.Net.DecompressionMethods.Deflate
+        };
+        _http = new HttpClient(handler);
+        _http.DefaultRequestHeaders.Referrer = new Uri(DefaultReferer);
+        RefreshUserAgent();
+    }
 
-            public string Url { get; set; } = "-1";
-            public UrlSourceInfo() 
-            {
-            }
-        }
+    private void RefreshUserAgent()
+    {
+        _http.DefaultRequestHeaders.UserAgent.Clear();
+        var ua = _userAgents[Random.Shared.Next(_userAgents.Length)];
+        while (!_http.DefaultRequestHeaders.UserAgent.TryParseAdd(ua)) ;
+    }
 
-        private readonly HttpClient _httpClient;
-        private readonly string _downloadPath = GlobalVariable.downloadFolderPath;
-        //private readonly string[] _supportedExtensions = { "mp3", "mp4" };
-        private readonly int _retryLimit = 2;
-        private readonly HttpClientHandler _handler;
-
-        public BilibiliDownloader()
-        {
-            this._handler = new HttpClientHandler()
-            {
-                AutomaticDecompression = System.Net.DecompressionMethods.GZip | System.Net.DecompressionMethods.Deflate
-            };
-            this._httpClient = new HttpClient(this._handler);
-            this.RefreshUserAgent();
-            this._httpClient.DefaultRequestHeaders.Referrer = new Uri("https://www.bilibili.com");
-        }
-
-        private string GetRandomUserAgent()
-        {
-            //fixed user agent 
-            var agents = new[] {
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/112.0.0.0 Safari/537.36",
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 Safari/537.36",
-            };
-            return agents[new Random().Next(agents.Length)];
-            //return UserAgent.Generate(UserAgentGenerator.Browser.Chrome,UserAgentGenerator.Platform.Desktop);
-        }
-
-        private void RefreshUserAgent()
-        {
-            this._httpClient.DefaultRequestHeaders.UserAgent.Clear();
-            while (!this._httpClient.DefaultRequestHeaders.UserAgent.TryParseAdd(this.GetRandomUserAgent())) ;
-        }
-
-        private string GetCurrentUserAgent()
-        {
-            var userAgentValues = this._httpClient.DefaultRequestHeaders.UserAgent;
-            return string.Join(" ", userAgentValues.Select(ua => ua.ToString()));
-        }
+    private string GetCurrentUserAgent()
+        => string.Join(" ", _http.DefaultRequestHeaders.UserAgent.Select(ua => ua.ToString()));
 
 
-        public async Task<string?> DownloadAsync(string url, ExtensionOption extension)
+    public async Task<string?> DownloadAsync(string url, ExtensionOption extension)
+    {
+        try
         {
             if (extension == ExtensionOption.Audio)
             {
                 var result = await DownloadFileAsync(url, "mp3");
                 return result == "not found" ? null : Path.Combine(_downloadPath, result);
             }
-            else if (extension == ExtensionOption.Video)
+
+            if (extension == ExtensionOption.Video)
             {
-                //var videoResult = await DownloadFileAsync(url, "mp4");
-                //var audioResult = await DownloadFileAsync(url, "mp3");
+                var (videoInfo, audioInfo) = await GetVideoAndAudioInfoAsync(url);
+                var sanitizedTitle = SanitizeFileName(videoInfo.Title);
+                var outputPath = Path.Combine(_downloadPath, $"{sanitizedTitle}.mp4");
+                var headers = MediaValidator.ConvertHttpClientToFfmpegHeaderArg(_http);
 
-                //string? DetectStatus()
-                //{
-                //    if (videoResult != "not found" && audioResult != "not found") return null;
-                //    if (videoResult == "not found") return audioResult;
-                //    if (audioResult == "not found") return videoResult;
-                //    return null;
-                //}
-
-                //var detect = DetectStatus();
-                //if (detect != null) return detect;
-
-                //var outputPath = Path.Combine(_downloadPath, "result" + videoResult);
-                //MergeVideoAndAudio(Path.Combine(_downloadPath, videoResult),
-                //                   Path.Combine(_downloadPath, audioResult),
-                //                   outputPath);
-
-                var videoInfo = await this.GetFileUrlAsync(url, "mp4");
-                videoInfo.Title = SanitizeFileName(videoInfo.Title);
-                var audioInfo = await this.GetFileUrlAsync(url, "mp3");
-
-                string outputPath = Path.Combine(_downloadPath, $"{videoInfo.Title}.mp4");
-
-                if (await MediaValidator.DownloadAndMergeMediaAsync(videoInfo.Url, audioInfo.Url, outputPath, MediaValidator.ConvertHttpClientToFfmpegHeaderArg(this._httpClient)))
-                {
+                if (await MediaValidator.DownloadAndMergeMediaAsync(videoInfo.Url, audioInfo.Url, outputPath, headers))
                     return outputPath;
-                }
-
-            }
-
-            return null;
-        }
-
-        public async Task<MediaProcess.AudioInfo?> GetBilibililStreamUrlAsync(string url)
-        {
-            TimeSpan? durationTimespan = null;
-            string header = "";
-            UrlSourceInfo info = default;
-
-            for (int i = 0; i < this._retryLimit; i++)
-            {
-                info = await GetFileUrlAsync(url, "mp3");
-                header = MediaValidator.ConvertHttpClientToFfmpegHeaderArg(this._httpClient);
-                durationTimespan = await MediaProcess.GetAudioDurationAsync(info.Url, header);
-                if (info.Url != "-1")
-                    break;
-            }
-
-            float duraion = 0f;
-            if (durationTimespan != null)
-                duraion = (float)durationTimespan.Value.TotalSeconds;
-
-            return new MediaProcess.AudioInfo()
-            {
-                Title = info.Title,
-                Creator = info.Author,
-                Duration = duraion,
-                Url = info.Url,
-                FfmpegHeaderArgument = header
-            };
-        }
-
-
-        public async IAsyncEnumerable<byte[]> GetChunksAsync(string url)
-        {
-            var info = await GetFileUrlAsync(url, "mp3");
-            var stream = await _httpClient.GetStreamAsync(info.Url);
-            var buffer = new byte[8192];
-            int read;
-            while ((read = await stream.ReadAsync(buffer)) > 0)
-            {
-                yield return buffer.Take(read).ToArray();
             }
         }
-
-        private async Task<string> DownloadFileAsync(string url, string extension)
+        catch (Exception e)
         {
-            for (int i = 0; i < _retryLimit; i++)
-            {
-                try
-                {
-                    var info = await GetFileUrlAsync(url, extension);
-                    if (info.Url == "-1")
-                    {
-                        Console.WriteLine("[Error] Unable to extract source url !");
-                        return "not found";
-                    }
-
-                    var response = await _httpClient.GetAsync(info.Url);
-                    if (!response.IsSuccessStatusCode) continue;
-
-                    info.Title = SanitizeFileName(info.Title);
-                    var fileName = $"{info.Title}.{extension}";
-                    var filePath = Path.Combine(_downloadPath, fileName);
-                    await using var fs = new FileStream(filePath, FileMode.Create);
-                    await response.Content.CopyToAsync(fs);
-                    return fileName;
-                }
-                catch (Exception e)
-                {
-                    Console.WriteLine($"[Error] Encounter error during downloading file from source url !{Environment.NewLine}{e}");
-                    continue;
-                }
-            }
-
-            return "not found";
+            Console.WriteLine($"[Error] Bilibili download failed:{Environment.NewLine}{e}");
         }
-
-        private async Task<UrlSourceInfo> GetFileUrlAsync(string url, string extension)
-        {
-            this.RefreshUserAgent();
-            string ua = this.GetCurrentUserAgent();
-            var request = new HttpRequestMessage(HttpMethod.Get, url);
-            var response = await _httpClient.SendAsync(request);
-
-            var html = await response.Content.ReadAsStringAsync();
-
-            var playInfoMatch = Regex.Match(html, @"__playinfo__=(.*?)</script><script>");
-            var playInfo = JsonConvert.DeserializeObject<JObject>(playInfoMatch.Groups[1].Value);
-
-            if (playInfo == null)
-                return default;
-
-            string videoUrl = "-1";
-            string audioUrl = "-1";
-
-            var videoDash = playInfo.GetValueOrDefault<JArray>("data", "dash", "video");
-            var audioDash = playInfo.GetValueOrDefault<JArray>("data", "dash", "audio");
-            var vKeys = videoDash.GetKeys().Select(k => int.Parse(k));
-            var aKeys = audioDash.GetKeys().Select(k => int.Parse(k));
-
-            var parserFuncs = new List<Func<JToken, string>>
-            {
-                t => t.GetValueOrDefault<string>("base_url") ,
-                t => t.GetValueOrDefault<string>("baseUrl") ,
-                t => t.GetValueOrDefault<JArray>("backup_url")[0].ToString(),
-                t => t.GetValueOrDefault<JArray>("backupUrl")[0].ToString()
-            };
-
-            foreach (int key in vKeys)
-            {
-                var jArr = videoDash[key];
-                if (jArr == null)
-                    continue;
-                var jKeys = jArr.GetKeys();
-
-                foreach (var parserFunc in parserFuncs)
-                {
-                    string parsedUrl = parserFunc(jArr);
-                    if (await MediaValidator.IsValidMediaUrlAsync(parsedUrl, "video", ua: ua))
-                    {
-                        videoUrl = parsedUrl;
-                        break;
-                    }
-                }
-            }
-
-            foreach (int key in aKeys)
-            {
-                var jArr = audioDash[key];
-                if (jArr == null)
-                    continue;
-                var jKeys = jArr.GetKeys();
-
-                foreach (var parserFunc in parserFuncs)
-                {
-                    string parsedUrl = parserFunc(jArr);
-                    if (await MediaValidator.IsValidMediaUrlAsync(parsedUrl, "audio", ua: ua))
-                    {
-                        audioUrl = parsedUrl;
-                        break;
-                    }
-                }
-            }
-
-            var info = ExtractTitleAuthorFromHtml(html);
-
-            if (extension == "mp4") info.Url = videoUrl;
-            else info.Url = audioUrl;
-            return info;
-        }
-
-        private static UrlSourceInfo ExtractTitleAuthorFromHtml(string html)
-        {
-            string pattern = @"__INITIAL_STATE__=(.*?);\(function\(\)";
-            var match = Regex.Match(html, pattern);
-
-            var info = new UrlSourceInfo();
-
-            if (match.Success)
-            {
-                string jsonString = match.Groups[1].Value;
-
-                using var doc = JsonDocument.Parse(jsonString);
-                var root = doc.RootElement;
-
-                if (root.TryGetProperty("videoData", out var videoData) &&
-                    videoData.TryGetProperty("title", out var titleProp))
-                {
-                    info.Title = titleProp.GetString() ?? "未知";
-
-                    if (videoData.TryGetProperty("owner", out var authorData)
-                        && authorData.TryGetProperty("name", out var name))
-                    {
-                        info.Author = name.GetString() ?? "未知";
-                    }
-                }
-
-            }
-
-            return info;
-        }
-
-        public async Task<string> GetStringWithEncodingAsync(string url, Encoding defaultEncoding)
-        {
-            var response = await _httpClient.GetAsync(url);
-            var contentBytes = await response.Content.ReadAsByteArrayAsync();
-
-            Encoding encoding = defaultEncoding;
-            var charset = response.Content.Headers.ContentType?.CharSet;
-            if (!string.IsNullOrEmpty(charset))
-            {
-                try
-                {
-                    encoding = Encoding.GetEncoding(charset);
-                }
-                catch (Exception e)
-                {
-                    Console.WriteLine($"[Error][Bilibili]{e}");
-                }
-            }
-
-            return encoding.GetString(contentBytes);
-        }
-
-        private static string SanitizeFileName(string name)
-        {
-            var invalid = Path.GetInvalidFileNameChars();
-            return string.Concat(name.Select(c => invalid.Contains(c) ? ' ' : c));
-        }
-
-        private void MergeVideoAndAudio(string videoPath, string audioPath, string outputPath)
-        {
-            var startInfo = new ProcessStartInfo
-            {
-                FileName = GlobalVariable.ffmpegExePath,
-                Arguments = $"-i \"{videoPath}\" -i \"{audioPath}\" -c:v copy -c:a aac -strict experimental \"{outputPath}\" -y",
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true
-            };
-
-            using var process = new Process { StartInfo = startInfo };
-            process.Start();
-            process.WaitForExit();
-
-            File.Delete(videoPath);
-            File.Delete(audioPath);
-        }
-
+        return null;
     }
 
-    public static class MediaValidator
+    public async Task<MediaProcess.AudioInfo?> GetBilibiliStreamUrlAsync(string url)
     {
-        private static readonly HttpClient httpClient = new HttpClient();
+        UrlSourceInfo info = default;
+        string header = "";
+        TimeSpan? duration = null;
 
-        public static async Task<bool> IsValidMediaUrlAsync(string url, string extension, string ua = null)
+        for (int i = 0; i < _retryLimit; i++)
+        {
+            info = await GetFileUrlAsync(url, "mp3");
+            if (info.Url == "-1") continue;
+
+            header = MediaValidator.ConvertHttpClientToFfmpegHeaderArg(_http);
+            duration = await MediaProcess.GetAudioDurationAsync(info.Url, header);
+            break;
+        }
+
+        return new MediaProcess.AudioInfo
+        {
+            Title = info.Title,
+            Creator = info.Author,
+            Duration = (float)(duration?.TotalSeconds ?? 0f),
+            Url = info.Url,
+            FfmpegHeaderArgument = header,
+        };
+    }
+
+
+    private async Task<string> DownloadFileAsync(string url, string extension)
+    {
+        for (int i = 0; i < _retryLimit; i++)
         {
             try
             {
-                var headRequest = new HttpRequestMessage(HttpMethod.Head, url);
-                if (!String.IsNullOrEmpty(ua))
-                    headRequest.Headers.UserAgent.ParseAdd(ua);
-
-                headRequest.Headers.Referrer = new Url("https://www.bilibili.com");
-
-                var headResponse = await httpClient.SendAsync(headRequest);
-
-                if (headResponse.IsSuccessStatusCode)
+                var info = await GetFileUrlAsync(url, extension);
+                if (info.Url == "-1")
                 {
-                    string headerAug = ConvertHttpRequestToFfmpegHeaderArg(headRequest);
-                    var contentType = headResponse.Content.Headers.ContentType?.MediaType;
-                    if (IsMediaContentType(contentType) && await IsMediaSupportedEncoding(url, extension, headerAug))
-                        return true;
+                    Console.WriteLine("[Error] Unable to extract source url!");
+                    return "not found";
                 }
 
-                var getRequest = new HttpRequestMessage(HttpMethod.Get, url);
-                getRequest.Headers.Range = new RangeHeaderValue(0, 1);
-                var getResponse = await httpClient.SendAsync(getRequest);
+                var response = await _http.GetAsync(info.Url);
+                if (!response.IsSuccessStatusCode) continue;
 
-                if (getResponse.IsSuccessStatusCode)
+                var fileName = $"{SanitizeFileName(info.Title)}.{extension}";
+                var filePath = Path.Combine(_downloadPath, fileName);
+                await using var fs = new FileStream(filePath, FileMode.Create);
+                await response.Content.CopyToAsync(fs);
+                return fileName;
+            }
+            catch (Exception e)
+            {
+                Console.WriteLine($"[Error] Bilibili file download failed:{Environment.NewLine}{e}");
+            }
+        }
+        return "not found";
+    }
+
+    private async Task<(UrlSourceInfo video, UrlSourceInfo audio)> GetVideoAndAudioInfoAsync(string url)
+    {
+        RefreshUserAgent();
+        string ua = GetCurrentUserAgent();
+        var html = await FetchHtmlAsync(url);
+        var meta = ExtractTitleAuthorFromHtml(html);
+        var dash = ExtractDashFromHtml(html);
+
+        string videoUrl = await ResolveFirstValidUrlAsync(dash.video, ExtensionOption.Video, ua);
+        string audioUrl = await ResolveFirstValidUrlAsync(dash.audio, ExtensionOption.Audio, ua);
+
+        return (
+            meta with { Url = videoUrl },
+            meta with { Url = audioUrl }
+        );
+    }
+
+    private async Task<UrlSourceInfo> GetFileUrlAsync(string url, string extension)
+    {
+        RefreshUserAgent();
+        string ua = GetCurrentUserAgent();
+        var html = await FetchHtmlAsync(url);
+        var meta = ExtractTitleAuthorFromHtml(html);
+        var dash = ExtractDashFromHtml(html);
+
+        var targetStream = extension == "mp4" ? dash.video : dash.audio;
+        var targetOption = extension == "mp4" ? ExtensionOption.Video : ExtensionOption.Audio;
+        string resolvedUrl = await ResolveFirstValidUrlAsync(targetStream, targetOption, ua);
+
+        return meta with { Url = resolvedUrl };
+    }
+
+    private async Task<string> FetchHtmlAsync(string url)
+    {
+        var response = await _http.SendAsync(new HttpRequestMessage(HttpMethod.Get, url));
+        return await response.Content.ReadAsStringAsync();
+    }
+
+    private static (JArray video, JArray audio) ExtractDashFromHtml(string html)
+    {
+        var match = Regex.Match(html, @"__playinfo__=(.*?)</script><script>");
+        var playInfo = JsonConvert.DeserializeObject<JObject>(match.Groups[1].Value);
+
+        var video = playInfo?.GetValueOrDefault<JArray>("data", "dash", "video") ?? new JArray();
+        var audio = playInfo?.GetValueOrDefault<JArray>("data", "dash", "audio") ?? new JArray();
+        return (video, audio);
+    }
+
+    private static readonly List<Func<JToken, string>> _urlParsers = new()
+    {
+        t => t.GetValueOrDefault<string>("base_url"),
+        t => t.GetValueOrDefault<string>("baseUrl"),
+        t => t.GetValueOrDefault<JArray>("backup_url")[0].ToString(),
+        t => t.GetValueOrDefault<JArray>("backupUrl")[0].ToString(),
+    };
+
+    private static async Task<string> ResolveFirstValidUrlAsync(JArray stream, ExtensionOption ext, string ua)
+    {
+        foreach (var item in stream)
+        {
+            foreach (var parser in _urlParsers)
+            {
+                try
                 {
-                    string headerAug = ConvertHttpRequestToFfmpegHeaderArg(headRequest);
-                    var contentType = getResponse.Content.Headers.ContentType?.MediaType;
-                    if (IsMediaContentType(contentType) && await IsMediaSupportedEncoding(url, extension, headerAug))
-                        return true;
+                    string candidate = parser(item);
+                    if (await MediaValidator.IsValidMediaUrlAsync(candidate, ext, ua, DefaultReferer))
+                        return candidate;
                 }
-
-                return false;
-            }
-            catch
-            {
-                return false;
+                catch { /* empty , move on */ }
             }
         }
-        private static bool IsMediaContentType(string? contentType)
-        {
-            return !string.IsNullOrEmpty(contentType) &&
-                   (contentType.StartsWith("video/") || contentType.StartsWith("audio/"));
-        }
+        return "-1";
+    }
 
-        private static async Task<bool> IsMediaSupportedEncoding(string url, string extension, string headerArgument)
-        {
-            string encoding = await GetMediaEncoding(url, extension, headerArgument);
-            if (encoding == "unsupported")
-                return false;
-            return _supportedAudioCodecOptions.ContainsKey(encoding) || _supportedVideoCodecOptions.ContainsKey(encoding);
-        }
 
-        private static Dictionary<string, string> _supportedVideoCodecOptions = new Dictionary<string, string>()
+    private static UrlSourceInfo ExtractTitleAuthorFromHtml(string html)
+    {
+        var match = Regex.Match(html, @"__INITIAL_STATE__=(.*?);\(function\(\)");
+        if (!match.Success) return default;
+
+        using var doc = JsonDocument.Parse(match.Groups[1].Value);
+        var root = doc.RootElement;
+
+        if (!root.TryGetProperty("videoData", out var videoData)) return default;
+
+        string title = videoData.TryGetProperty("title", out var t) ? t.GetString() ?? "未知" : "未知";
+        string author = videoData.TryGetProperty("owner", out var owner) &&
+                        owner.TryGetProperty("name", out var n)
+                            ? n.GetString() ?? "未知"
+                            : "未知";
+
+        return new UrlSourceInfo(title, author);
+    }
+
+    private static string SanitizeFileName(string name)
+    {
+        var invalid = Path.GetInvalidFileNameChars();
+        return string.Concat(name.Select(c => invalid.Contains(c) ? ' ' : c));
+    }
+}
+
+
+public static class MediaValidator
+{
+    private static readonly HttpClient _http = new(new HttpClientHandler { UseCookies = false });
+
+    private static readonly Dictionary<string, string> _supportedVideoCodecs = new()
+    {
+        ["h264"] = "libx264",
+        ["hevc"] = "libx265",
+        ["av1"] = "libaom-av1",
+        ["vp8"] = "libvpx",
+        ["vp9"] = "libvpx-vp9",
+        ["mpeg2"] = "mpeg2video",
+        ["mpeg4"] = "mpeg4",
+        ["theora"] = "libtheora",
+        ["prores"] = "prores_ks",
+        ["dnxhd"] = "dnxhd",
+        ["jpeg"] = "mjpeg",
+        ["h263"] = "h263",
+        ["wmv3"] = "wmv3",
+        ["flv1"] = "flv",
+        ["mvc"] = "libx264",
+    };
+
+    private static readonly Dictionary<string, string> _supportedAudioCodecs = new()
+    {
+        ["aac"] = "aac",
+        ["mp3"] = "libmp3lame",
+        ["opus"] = "libopus",
+        ["ac3"] = "ac3",
+        ["flac"] = "flac",
+        ["vorbis"] = "libvorbis",
+        ["pcm"] = "pcm_s16le",
+        ["alac"] = "alac",
+        ["wma"] = "wmav2",
+        ["speex"] = "libspeex",
+        ["amr-nb"] = "libamr_nb",
+        ["amr-wb"] = "libamr_wb",
+    };
+
+    public static async Task<bool> IsValidMediaUrlAsync(
+        string url, ExtensionOption extension, string? ua = null, string referer = "https://www.bilibili.com")
+    {
+        try
         {
-            { "h264", "libx264" },
-            { "hevc", "libx265" },
-            { "av1", "libaom-av1" },
-            { "vp8", "libvpx" },
-            { "vp9", "libvpx-vp9" },
-            { "mpeg2", "mpeg2video" },
-            { "mpeg4", "mpeg4" },
-            { "theora", "libtheora" },
-            { "prores", "prores_ks" },
-            { "dnxhd", "dnxhd" },
-            { "jpeg", "mjpeg" },
-            { "h263", "h263" },
-            { "wmv3", "wmv3" },
-            { "flv1", "flv" },
-            { "mvc", "libx264" } // Multi-view video encoding
+            if (await TryValidateAsync(HttpMethod.Head, url, extension, ua, referer, rangeHeader: null))
+                return true;
+
+            return await TryValidateAsync(HttpMethod.Get, url, extension, ua, referer,
+                rangeHeader: new RangeHeaderValue(0, 1));
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static async Task<bool> TryValidateAsync(
+        HttpMethod method, string url, ExtensionOption ext,
+        string? ua, string referer, RangeHeaderValue? rangeHeader)
+    {
+        var request = new HttpRequestMessage(method, url);
+        if (!string.IsNullOrEmpty(ua)) request.Headers.UserAgent.ParseAdd(ua);
+        request.Headers.Referrer = new Uri(referer);
+        if (rangeHeader is not null) request.Headers.Range = rangeHeader;
+
+        var response = await _http.SendAsync(request);
+        if (!response.IsSuccessStatusCode) return false;
+
+        var contentType = response.Content.Headers.ContentType?.MediaType;
+        if (!IsMediaContentType(contentType)) return false;
+
+        string headerArg = ConvertHttpRequestToFfmpegHeaderArg(request);
+        return await IsMediaSupportedEncoding(url, ext, headerArg);
+    }
+
+    private static bool IsMediaContentType(string? contentType)
+        => !string.IsNullOrEmpty(contentType) &&
+           (contentType.StartsWith("video/") || contentType.StartsWith("audio/"));
+
+    private static async Task<bool> IsMediaSupportedEncoding(string url, ExtensionOption ext, string headerArg)
+    {
+        var encoding = await GetMediaEncoding(url, ext, headerArg);
+        var supported = ext == ExtensionOption.Video ? _supportedVideoCodecs : _supportedAudioCodecs;
+        return supported.ContainsKey(encoding);
+    }
+
+    private static async Task<string> GetMediaEncoding(string url, ExtensionOption ext, string headerArg)
+    {
+        string stream = ext == ExtensionOption.Video ? "v:0" : "a:0";
+        string args = $"-v error -select_streams {stream} -show_entries stream=codec_name " +
+                        $"-of default=noprint_wrappers=1:nokey=1 {headerArg} \"{url}\"";
+
+        var psi = new ProcessStartInfo
+        {
+            FileName = GlobalVariable.FfprobeExePath,
+            Arguments = args,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
         };
 
-        private static Dictionary<string, string> _supportedAudioCodecOptions = new Dictionary<string, string>()
+        using var process = Process.Start(psi);
+        if (process is null) return "failed";
+
+        var output = await process.StandardOutput.ReadToEndAsync();
+        var error = await process.StandardError.ReadToEndAsync();
+        await process.WaitForExitAsync();
+
+        return string.IsNullOrWhiteSpace(error) ? output.Trim() : "unknown";
+    }
+
+    public static async Task<bool> DownloadAndMergeMediaAsync(
+        string videoUrl, string audioUrl, string outputPath, string headerArg = "")
+    {
+        string args = $"-y {headerArg} -i \"{videoUrl}\" {headerArg} -i \"{audioUrl}\" " +
+                      $"-c:v libx264 -crf 23 -preset fast -c:a aac -b:a 192k -f mp4 \"{outputPath}\"";
+
+        var psi = new ProcessStartInfo
         {
-            { "aac", "aac" },
-            { "mp3", "libmp3lame" },
-            { "opus", "libopus" },
-            { "ac3", "ac3" },
-            { "flac", "flac" },
-            { "vorbis", "libvorbis" },
-            { "pcm", "pcm_s16le" },
-            { "alac", "alac" },
-            { "wma", "wmav2" },
-            { "speex", "libspeex" },
-            { "amr-nb", "libamr_nb" },
-            { "amr-wb", "libamr_wb" }
+            FileName = GlobalVariable.FfmpegExePath,
+            Arguments = args,
+            UseShellExecute = false,
+            CreateNoWindow = true,
         };
 
-        private static async Task<string> GetMediaEncoding(string url, string extension, string headerArgument)
+        try
         {
-            extension = extension.ToLowerInvariant();
-
-            string extensionOption = (extension == "video") ?
-                "v:0" : (extension == "audio") ? "a:0" : "unsupported";
-
-            if (extensionOption == "unsupported")
-                return extensionOption;
-
-            string argument = $"-v error -select_streams {extensionOption} -show_entries stream=codec_name -of default=noprint_wrappers=1:nokey=1 {headerArgument} \"{url}\"";
-            var processStartInfo = new ProcessStartInfo
-            {
-                FileName = GlobalVariable.ffprobeExePath,
-                Arguments = argument,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true
-            };
-            using var process = Process.Start(processStartInfo);
-
-            if (process == null)
-                return "failed";
-
-            var output = await process.StandardOutput.ReadToEndAsync();
-            var error = await process.StandardError.ReadToEndAsync();
+            using var process = Process.Start(psi);
+            if (process is null) return false;
             await process.WaitForExitAsync();
-
-            string encoding = string.IsNullOrWhiteSpace(error) ? output.Trim() : "unknown";
-            //Console.WriteLine($"Parsed source encoding : {url}{Environment.NewLine}{encoding}");
-            return encoding;
+            return process.ExitCode == 0;
         }
-
-        public static string ConvertHttpRequestToFfmpegHeaderArg(HttpRequestMessage request)
+        catch (Exception ex)
         {
-            var sb = new StringBuilder();
-
-            foreach (var header in request.Headers)
-            {
-                string joinedValue = string.Join(", ", header.Value);
-                sb.Append($"{header.Key}: {joinedValue}\r\n");
-            }
-
-            if (request.Content != null)
-            {
-                foreach (var header in request.Content.Headers)
-                {
-                    string joinedValue = string.Join(", ", header.Value);
-                    sb.Append($"{header.Key}: {joinedValue}\r\n");
-                }
-            }
-
-            var headerAug = $"-headers \"{sb.ToString()}\"";
-            //Console.WriteLine(headerAug);
-            return headerAug;
+            Console.WriteLine($"[Error] ffmpeg merge failed: {ex.Message}");
+            return false;
         }
+    }
 
-        public static string ConvertHttpClientToFfmpegHeaderArg(HttpClient client)
-        {
-            var sb = new StringBuilder();
+    public static string ConvertHttpRequestToFfmpegHeaderArg(HttpRequestMessage request)
+    {
+        var sb = new StringBuilder();
+        foreach (var h in request.Headers)
+            sb.Append($"{h.Key}: {string.Join(", ", h.Value)}\r\n");
+        if (request.Content is not null)
+            foreach (var h in request.Content.Headers)
+                sb.Append($"{h.Key}: {string.Join(", ", h.Value)}\r\n");
+        return $"-headers \"{sb}\"";
+    }
 
-            // Headers from HttpClient.DefaultRequestHeaders
-            foreach (var header in client.DefaultRequestHeaders)
-            {
-                string joinedValue = string.Join(", ", header.Value);
-                sb.Append($"{header.Key}: {joinedValue}\r\n");
-            }
-
-            var headerArg = $"-headers \"{sb.ToString()}\"";
-            //Console.WriteLine(headerArg);
-            return headerArg;
-        }
-
-
-        public static async Task<bool> ConvertAndDownloadVideoAsync(string sourceUrl, string outputPath, string headerArgument)
-        {
-            var ffmpegPath = "ffmpeg";  // Path to ffmpeg executable
-            var arguments = $"{headerArgument} -i \"{sourceUrl}\" -c:v libx264 -crf 23 -preset fast -c:a aac -b:a 192k -f mp4 \"{outputPath}\"";
-
-            var processStartInfo = new ProcessStartInfo
-            {
-                FileName = ffmpegPath,
-                Arguments = arguments,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true
-            };
-
-            try
-            {
-                using var process = Process.Start(processStartInfo);
-                if (process == null) return false;
-
-                var output = await process.StandardOutput.ReadToEndAsync();
-                var error = await process.StandardError.ReadToEndAsync();
-
-                await process.WaitForExitAsync();
-                return process.ExitCode == 0;
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Error: {ex.Message}");
-                return false;
-            }
-        }
-
-        public static async Task<bool> DownloadAndMergeMediaAsync(string videoUrl, string audioUrl, string outputPath, string headerArgument = "")
-        {
-            var argument = $"-y {headerArgument} -i \"{videoUrl}\" {headerArgument} -i \"{audioUrl}\" -c:v libx264 -crf 23 -preset fast -c:a aac -b:a 192k -f mp4 \"{outputPath}\"";
-
-            var processStartInfo = new ProcessStartInfo
-            {
-                FileName = GlobalVariable.ffmpegExePath,
-                Arguments = argument,
-                RedirectStandardOutput = false,
-                RedirectStandardError = false,
-                UseShellExecute = false,
-                CreateNoWindow = true
-            };
-
-            try
-            {
-                using (Process process = new Process())
-                {
-                    process.StartInfo = processStartInfo;
-                    process.Start();
-                    process.WaitForExit();
-
-                    return process.ExitCode == 0;
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Error: {ex.Message}");
-                return false;
-            }
-        }
-
-
+    public static string ConvertHttpClientToFfmpegHeaderArg(HttpClient client)
+    {
+        var sb = new StringBuilder();
+        foreach (var h in client.DefaultRequestHeaders)
+            sb.Append($"{h.Key}: {string.Join(", ", h.Value)}\r\n");
+        return $"-headers \"{sb}\"";
     }
 }

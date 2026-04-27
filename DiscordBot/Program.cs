@@ -2,17 +2,17 @@
 using NetCord;
 using NetCord.Gateway;
 using NetCord.Logging;
-using NetCord.Rest;
 using NetCord.Services;
 using NetCord.Services.ApplicationCommands;
 using NetCord.Services.Commands;
 using NetCord.Services.ComponentInteractions;
 
+
 bool firstTimeReady = true;
 
 GlobalVariable.Init();
 
-GatewayClient client = new(new BotToken(GlobalVariable.botToken), new GatewayClientConfiguration
+GatewayClient client = new(new BotToken(GlobalVariable.BotToken), new GatewayClientConfiguration
 {
     Logger = new ConsoleLogger(),
     Intents = GatewayIntents.All 
@@ -31,12 +31,12 @@ interactionService.AddModules(typeof(Program).Assembly);
 
 async Task GetBotInfo()
 {
-    GlobalVariable.botName = user.Username;
-    GlobalVariable.botID = user.Id;
+    GlobalVariable.BotName = user.Username;
+    GlobalVariable.BotID = user.Id;
     GlobalVariable.client = client;
     var application = await client.Rest.GetCurrentApplicationAsync();
-    GlobalVariable.creatorName = application.Owner.GlobalName;
-    GlobalVariable.creatorID = application.Owner.Id;
+    GlobalVariable.CreatorName = application.Owner.GlobalName;
+    GlobalVariable.CreatorID = application.Owner.Id;
 }
 void LoopSetGameAsync()
 {
@@ -50,7 +50,7 @@ void LoopSetGameAsync()
                     $"Status", UserActivityType.Custom
                 )
                 {
-                    State = $"{GlobalVariable.botNickname}在{DateTime.Now:HH:mm}負債了{Utils.RandInt(0, 9999)}億！"
+                    State = $"{GlobalVariable.BotNickname}在{DateTime.Now:HH:mm}負債了{Utils.RandInt(0, 9999)}億！"
                 }}
         });   
 
@@ -65,24 +65,36 @@ client.Ready += async (_) =>
         Console.WriteLine($"正在初始化參數與自檢測方法...");
         await GetBotInfo();
         ImageAlgorithm.LoopCheckExpiredCache();
-        var a = MediaProcess.DetermineAudioUrlAlgorithm(WebOption.Bilibili);
-        if (GlobalVariable.resinLoopCheck)
+
+        if (GlobalVariable.ResinLoopCheck)
         {
             await Task.Run(async () =>
             {
                 var loopcheck = new HoyoLabService();
-                loopcheck.LoopCheckResin(client, 190, TimeSpan.FromMinutes(30), GameType.Genshin);
+                loopcheck.LoopCheckResin(client, 180, TimeSpan.FromMinutes(60), GameType.Genshin);
                 await Task.Delay(200);
-                loopcheck.LoopCheckResin(client, 280, TimeSpan.FromMinutes(30), GameType.HonkaiStarRail);
+                loopcheck.LoopCheckResin(client, 270, TimeSpan.FromMinutes(60), GameType.HonkaiStarRail);
                 await Task.Delay(200);
-                loopcheck.LoopCheckResin(client, 225, TimeSpan.FromMinutes(30), GameType.ZenlessZoneZero);
+                loopcheck.LoopCheckResin(client, 220, TimeSpan.FromMinutes(60), GameType.ZenlessZoneZero);
                 await Task.Delay(200);
-                loopcheck.LoopCheckDailyDone(client,new TimeOnly(0,0,0) , new[] {GameType.Genshin , GameType.HonkaiStarRail , GameType.ZenlessZoneZero });
+                loopcheck.LoopCheckDailyDone(client, new TimeOnly(0, 0, 0), new[] { GameType.Genshin, GameType.HonkaiStarRail, GameType.ZenlessZoneZero });
             });
         }
 
         LoopSetGameAsync();
         firstTimeReady = false;
+
+        try
+        {
+            var ytdl = new YoutubeDLSharp.YoutubeDL();
+            Console.WriteLine($"yt-dlp 版本確認: {ytdl.Version}");
+        }
+        catch (Exception)
+        {
+            Console.WriteLine("yt-dlp 無效或遺失，執行自動下載...");
+            await YoutubeDLSharp.Utils.DownloadYtDlp();
+        }
+
         Console.WriteLine($"目前登入 : {user.Username}#{user.Discriminator}");
     }
     else
@@ -93,10 +105,10 @@ client.Ready += async (_) =>
 
 client.MessageCreate += async message => 
 {
-    if (!message.Content.StartsWith(GlobalVariable.commandPrefix) || message.Author.IsBot)
+    if (!message.Content.StartsWith(GlobalVariable.CommandPrefix) || message.Author.IsBot)
         return;
 
-    if(message.Content == $"{GlobalVariable.commandPrefix}sync")
+    if(message.Content == $"{GlobalVariable.CommandPrefix}sync")
     {
         await applicationService.RegisterCommandsAsync(client.Rest, client.Id);
         await autocompleteService.RegisterCommandsAsync(client.Rest, client.Id);
@@ -116,7 +128,7 @@ client.MessageCreate += async message =>
 client.InteractionCreate += async interaction =>
 {
     if (interaction is ButtonInteraction btnInteraction)
-        await ButtonHelper.OnComponentExecuted(btnInteraction);
+        await ButtonHelper.HandleAsync(btnInteraction);
     else if (interaction is ApplicationCommandInteraction applicationInteraction)
         await applicationService.ExecuteAsync(new ApplicationCommandContext(applicationInteraction, client));
     else if (interaction is AutocompleteInteraction autoInteraction)
@@ -125,7 +137,7 @@ client.InteractionCreate += async interaction =>
 
 AppDomain.CurrentDomain.ProcessExit += async (s, e) =>
 {
-    foreach (var vc in GlobalVariable.serverVoiceClientMap.Values)
+    foreach (var vc in GlobalVariable.ServerVoiceClientMap.Values)
     {
         await client.LeaveVoiceChannel(vc.GuildId);
     }

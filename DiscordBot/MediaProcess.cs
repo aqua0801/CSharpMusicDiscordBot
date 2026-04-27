@@ -1,19 +1,11 @@
 ﻿using NetCord;
 using NetCord.Gateway.Voice;
-using Newtonsoft.Json.Linq;
-using System.Collections.Generic;
 using System.Diagnostics;
-using System.Linq;
-using System.Net.Http.Headers;
-using System.Text;
 using System.Text.Json;
-using System.Threading.Tasks;
 using YoutubeDLSharp;
 using YoutubeDLSharp.Options;
 using YoutubeExplode;
 using YoutubeExplode.Common;
-using YoutubeExplode.Playlists;
-using YoutubeExplode.Videos.Streams;
 
 namespace DiscordBot
 {
@@ -21,7 +13,7 @@ namespace DiscordBot
     {
         private static readonly YoutubeDL ytdl = new YoutubeDL()
         {
-            FFmpegPath = GlobalVariable.ffmpegExePath,
+            FFmpegPath = GlobalVariable.FfmpegExePath,
             YoutubeDLPath = "yt-dlp.exe"
         };
 
@@ -31,7 +23,6 @@ namespace DiscordBot
             DumpSingleJson = true,
             NoPlaylist = true
         };
-
 
         public class AudioInfo
         {
@@ -43,24 +34,22 @@ namespace DiscordBot
             public string FfmpegHeaderArgument { get; set; } = "";
         }
 
-
         private static readonly BilibiliDownloader bilibiliDownloader = new BilibiliDownloader();
 
-        public static Func<string, Task<AudioInfo?>> DetermineAudioUrlAlgorithm(WebOption web)
+        public static Func<string, Task<AudioInfo?>> ResolveAudioUrlAlgorithm(WebOption web)
         {
             switch (web)
             {
                 case (WebOption.Youtube):
                     return GetYoutubeStreamUrlAsync;
                 case (WebOption.Bilibili):
-                    return bilibiliDownloader.GetBilibililStreamUrlAsync;
+                    return bilibiliDownloader.GetBilibiliStreamUrlAsync;
                 default:
                     throw new InvalidOperationException("Unsupported website for audio extraction !");
             }
         }
 
-
-        public static Func<string, ExtensionOption, Task<string?>> DetermineDownloadVideoAlgorithm(WebOption web)
+        public static Func<string, ExtensionOption, Task<string?>> ResolveDownloadVideoAlgorithm(WebOption web)
         {
             if (web == WebOption.Youtube)
             {
@@ -77,21 +66,21 @@ namespace DiscordBot
         {
             string ext = (extension == ExtensionOption.Video) ? ".mp4" : ".mp3";
             string filename = $"{Utils.GenerateHashCode(8)}{ext}";
-            string fullfilename = Path.Combine(GlobalVariable.downloadFolderPath, filename);
+            string fullfilename = Path.Combine(GlobalVariable.DownloadFolderPath, filename);
             var ytlp = new YoutubeDL()
             {
-                FFmpegPath = GlobalVariable.ffmpegExePath,
+                FFmpegPath = GlobalVariable.FfmpegExePath,
                 YoutubeDLPath = "yt-dlp.exe"
             };
             ytdl.RestrictFilenames = true;
             ytdl.OverwriteFiles = true;
             ytdl.OutputFileTemplate = filename;
-            ytdl.OutputFolder = GlobalVariable.downloadFolderPath;
+            ytdl.OutputFolder = GlobalVariable.DownloadFolderPath;
 
             string TryFindFilename()
             {
                 if (File.Exists(fullfilename)) return fullfilename;
-                var files = new DirectoryInfo(GlobalVariable.downloadFolderPath).GetFiles();
+                var files = new DirectoryInfo(GlobalVariable.DownloadFolderPath).GetFiles();
 
                 foreach (var file in files)
                 {
@@ -115,7 +104,6 @@ namespace DiscordBot
 
             return TryFindFilename();
         }
-
 
         public static async Task<List<string>> GetPlaylistUrlsAsync(string url)
         {
@@ -168,12 +156,11 @@ namespace DiscordBot
             return null;
         }
 
-
         public static async Task<Process?> CreateStreamAsync(AudioInfo audioInfo)
         {
             var ffmpeg = new ProcessStartInfo
             {
-                FileName = GlobalVariable.ffmpegExePath,
+                FileName = GlobalVariable.FfmpegExePath,
                 Arguments = $"-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 {audioInfo.FfmpegHeaderArgument} -i \"{audioInfo.Url}\" -filter:a \"volume=0.25\" -vn -f s16le -ar 48000 -ac 2 pipe:1",
                 UseShellExecute = false,
                 RedirectStandardOutput = true,
@@ -199,7 +186,7 @@ namespace DiscordBot
         {
             var ffmpeg = new ProcessStartInfo
             {
-                FileName = GlobalVariable.ffmpegExePath,
+                FileName = GlobalVariable.FfmpegExePath,
                 Arguments = $"-hide_banner -loglevel error -i \"{absoluteFilePath}\" -f s16le -ar 48000 -ac 2 pipe:1",
                 UseShellExecute = false,
                 RedirectStandardOutput = true,
@@ -246,12 +233,11 @@ namespace DiscordBot
             return TimeSpan.FromSeconds(0);
         }
 
-
         public static async Task PlayAudioAsync(VoiceClient vc, Process ffmpeg)
         {
             using var output = ffmpeg.StandardOutput.BaseStream;
             await vc.EnterSpeakingStateAsync(new SpeakingProperties(SpeakingFlags.Microphone));
-            var outStream = vc.CreateOutputStream();
+            var outStream = vc.CreateVoiceStream();
             OpusEncodeStream stream = new(outStream, PcmFormat.Short, VoiceChannels.Stereo, OpusApplication.Audio);
     
             try
@@ -277,7 +263,7 @@ namespace DiscordBot
 
                 if (audioInfo == null)
                 {
-                    await interaction.SendFollowupMessageAsync($"{GlobalVariable.botNickname}無法解析音訊網址 !", display);
+                    await interaction.SendFollowupMessageAsync($"{GlobalVariable.BotNickname}無法解析音訊網址 !", display);
                     return;
                 }
 
@@ -285,26 +271,23 @@ namespace DiscordBot
 
                 if (ffmpeg == null)
                 {
-                    await interaction.SendFollowupMessageAsync($"{GlobalVariable.botNickname}無法處理音訊 !", display);
+                    await interaction.SendFollowupMessageAsync($"{GlobalVariable.BotNickname}無法處理音訊 !", display);
                     return;
                 }
 
-                await interaction.SendFollowupMessageAsync($"{GlobalVariable.botNickname}激情開唱 : {audioInfo.Title} !", display);
+                await interaction.SendFollowupMessageAsync($"{GlobalVariable.BotNickname}激情開唱 : {audioInfo.Title} !", display);
 
                 await PlayAudioAsync(vc, ffmpeg);
 
             });
         }
 
-
     }
 
     public static class FFmpegCompressor
     {
-        private const int MinAudioBitrate = 32000;
-        private const int MaxAudioBitrate = 256000;
 
-        public static void CompressVideo(string inputPath, string outputPath, int targetSizeMB = 10, string ffmpegPath = GlobalVariable.ffmpegExePath, string ffprobePath = GlobalVariable.ffprobeExePath)
+        public static void CompressVideo(string inputPath, string outputPath, int targetSizeMB = 10, string ffmpegPath = GlobalVariable.FfmpegExePath, string ffprobePath = GlobalVariable.FfprobeExePath)
         {
             // 1. Get media info using ffprobe
             var probeJson = RunProcess(ffprobePath, $"-v quiet -print_format json -show_format -show_streams \"{inputPath}\"");

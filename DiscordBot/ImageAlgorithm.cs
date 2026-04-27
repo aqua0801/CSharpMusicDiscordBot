@@ -64,8 +64,8 @@ namespace DiscordBot
             }
         }
 
-        private const string _imagesPath = GlobalVariable.imagesFolderPath;
-        private const string _labelsPath = GlobalVariable.labelsFolderPath;
+        private const string _imagesPath = GlobalVariable.ImagesFolderPath;
+        private const string _labelsPath = GlobalVariable.LabelsFolderPath;
         private static TimeSpan _cacheExpiredTimeSpan = TimeSpan.FromSeconds(5);
         private static ConcurrentDictionary<string, RefPair<DateTime, string>> _cachedQueryResult = new ConcurrentDictionary<string, RefPair<DateTime, string>>();
 

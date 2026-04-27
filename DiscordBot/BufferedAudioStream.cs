@@ -1,17 +1,23 @@
-﻿public class BufferedAudioStream : Stream
+﻿public sealed class BufferedAudioStream : Stream
 {
     private readonly MemoryStream _buffer = new();
-    private long _readPosition = 0;
-    private bool _isPaused = false;
-    private bool _isFeedingComplete = false;
     private readonly object _lock = new();
-    private readonly SemaphoreSlim _dataAvailable = new(0);
+    private readonly SemaphoreSlim _dataReady = new(0);
+
+    private long _readPosition;
+    private bool _isPaused;
+    private bool _feedComplete;
 
     public override bool CanRead => true;
     public override bool CanSeek => false;
     public override bool CanWrite => false;
     public override long Length => _buffer.Length;
-    public override long Position { get => _readPosition; set => throw new NotSupportedException(); }
+    public override long Position
+    {
+        get => _readPosition;
+        set => throw new NotSupportedException();
+    }
+
 
     public void Pause()
     {
@@ -23,41 +29,45 @@
         lock (_lock)
         {
             _isPaused = false;
-            _dataAvailable.Release();
+            _dataReady.Release();
         }
     }
 
-    public void MarkFeedingComplete()
-    {
-        _isFeedingComplete = true;
-        _dataAvailable.Release();
-    }
 
-    public async Task FeedFromStreamAsync(Stream source)
+    public async Task FeedFromStreamAsync(Stream source, CancellationToken ct = default)
     {
-        byte[] temp = new byte[4096];
-        int bytesRead;
-
-        while ((bytesRead = await source.ReadAsync(temp, 0, temp.Length)) > 0)
+        var temp = new byte[4096];
+        try
         {
-            lock (_lock)
+            int bytesRead;
+            while ((bytesRead = await source.ReadAsync(temp, ct)) > 0)
             {
-                long pos = _buffer.Position;
-                _buffer.Position = _buffer.Length;
-                _buffer.Write(temp, 0, bytesRead);
-                _buffer.Position = pos;
+                lock (_lock)
+                {
+                    long savedPos = _buffer.Position;
+                    _buffer.Position = _buffer.Length;
+                    _buffer.Write(temp, 0, bytesRead);
+                    _buffer.Position = savedPos;
+                }
+                _dataReady.Release();
             }
-            _dataAvailable.Release();
         }
-        MarkFeedingComplete();
+        catch (OperationCanceledException) { }
+        finally
+        {
+            _feedComplete = true;
+            _dataReady.Release();
+        }
     }
 
-    public override async Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
+
+    public override async Task<int> ReadAsync(
+        byte[] buffer, int offset, int count, CancellationToken ct)
     {
         while (true)
         {
-            if (cancellationToken.IsCancellationRequested)
-                return 0;
+            if (ct.IsCancellationRequested) return 0;
+
             lock (_lock)
             {
                 if (_isPaused) return 0;
@@ -71,22 +81,25 @@
                     return read;
                 }
 
-                if (_isFeedingComplete)
-                    return 0;
+                if (_feedComplete) return 0;
             }
-            await _dataAvailable.WaitAsync(cancellationToken);
+
+            await _dataReady.WaitAsync(ct);
         }
     }
 
     public override int Read(byte[] buffer, int offset, int count)
+        => ReadAsync(buffer, offset, count).GetAwaiter().GetResult();
+
+    protected override void Dispose(bool disposing)
     {
-        return ReadAsync(buffer, offset, count).GetAwaiter().GetResult();
+        if (disposing) { _buffer.Dispose(); _dataReady.Dispose(); }
+        base.Dispose(disposing);
     }
 
-    #region NotSupported
+
     public override void Flush() => throw new NotSupportedException();
     public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
     public override void SetLength(long value) => throw new NotSupportedException();
     public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
-    #endregion
 }

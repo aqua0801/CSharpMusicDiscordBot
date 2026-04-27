@@ -3,43 +3,52 @@ using Humanizer;
 using NetCord;
 using NetCord.Gateway;
 using NetCord.Gateway.Voice;
-using NetCord.Hosting.Services.ApplicationCommands;
 using NetCord.Rest;
 using NetCord.Services;
 using NetCord.Services.ApplicationCommands;
-using System.IO;
-using System.Security.Principal;
+
 
 public class SlashCommands : ApplicationCommandModule<ApplicationCommandContext>
 {
     public static bool ToEphemeral(DisplayOption display) => display == DisplayOption.Hide;
 
-    public static async Task<(bool success,JoinResult result)> HandleResponseJoinToVC<T>(T context , DisplayOption display) where T : IUserContext , IGuildContext , IInteractionContext
+    public static async Task<(bool Success, JoinResult Result)> HandleResponseJoinToVCAsync<T>(
+        T context, DisplayOption display)
+        where T : IUserContext, IGuildContext, IInteractionContext
     {
-        JoinResult joinResult = null;
+        JoinResult? joinResult = null;
         try
         {
             joinResult = await Utils.JoinToUserVC(context);
+
             if (joinResult.ToUserState == JoinToUserState.UserNotInVC)
             {
                 await context.Interaction.SendFollowupMessageAsync("你不在頻道裡喔！", display);
                 return (false, joinResult);
             }
-            else if (joinResult.JoinState == JoinState.Fail || joinResult.VC == null)
+
+            if (joinResult.JoinState == JoinState.Fail || joinResult.VC is null)
             {
                 await context.Interaction.SendFollowupMessageAsync("無法加入聊天室！", display);
                 return (false, joinResult);
             }
-            else
+
+            int retryCount = 0;
+            while (joinResult.VC.Status != WebSocketStatus.Ready)
             {
-                await joinResult.VC.EnterSpeakingStateAsync(new SpeakingProperties(SpeakingFlags.Microphone));
-                return (true, joinResult);
+                retryCount++;
+                if(retryCount%100==0 && retryCount!=0)
+                    Console.WriteLine($"[Warning] HandleResponseJoinToVCAsync 連接尚未準備好，已等待 {retryCount * 100} ms");
+                await Task.Delay(100);
             }
-                
+
+            await joinResult.VC.EnterSpeakingStateAsync(new SpeakingProperties(SpeakingFlags.Microphone));
+            return (true, joinResult);
         }
-        catch
+        catch (Exception ex)
         {
-            return (false,joinResult);
+            Console.WriteLine($"[Error] HandleResponseJoinToVCAsync 失敗：{ex}");
+            return (false, joinResult ?? new JoinResult { JoinState = JoinState.Fail });
         }
     }
 
@@ -51,25 +60,25 @@ public class SlashCommands : ApplicationCommandModule<ApplicationCommandContext>
     {
         await Utils.DeferResponse(Context,display);
 
-        var (success, result) = await HandleResponseJoinToVC(Context,display);
+        var (success, result) = await HandleResponseJoinToVCAsync(Context,display);
 
         if(success)
         {
             var vc = result.VC;
 
-            var playlist = PlaylistSystem.GetorCreatePlaylist(Context.Guild, vc , result.ChannelID);
-            bool firstTrack = playlist._urls.Count == 0;
+            var playlist = PlaylistRegistry.GetOrCreate(Context.Guild, vc , result.ChannelId);
+            bool firstTrack = playlist.Queue.Count == 0;
 
-            var urlTupleList = new List<Tuple<WebOption, string>>()
+            var urlTupleList = new List<QueueEntry>()
                     {
-                        Tuple.Create(WebOption.Youtube,url)
+                        new QueueEntry(WebOption.Youtube,url)
                     };
 
-            playlist.AddUrls(urlTupleList);
+            playlist.Enqueue(urlTupleList);
 
             if (firstTrack)
             {
-                await Context.Interaction.SendFollowupMessageAsync($"{GlobalVariable.botNickname}激情開唱！", display);
+                await Context.Interaction.SendFollowupMessageAsync($"{GlobalVariable.BotNickname}激情開唱！", display);
                 await playlist.StartAsync(Context.Interaction);
             }
             else
@@ -87,25 +96,25 @@ public class SlashCommands : ApplicationCommandModule<ApplicationCommandContext>
     {
         await Utils.DeferResponse(Context, display);
 
-        var (success, result) = await HandleResponseJoinToVC(Context, display);
+        var (success, result) = await HandleResponseJoinToVCAsync(Context, display);
 
         if (success)
         {
             var vc = result.VC;
 
-            var playlist = PlaylistSystem.GetorCreatePlaylist(Context.Guild, vc , result.ChannelID);
-            bool firstTrack = playlist._urls.Count == 0;
+            var playlist = PlaylistRegistry.GetOrCreate(Context.Guild, vc , result.ChannelId);
+            bool firstTrack = playlist.Queue.Count == 0;
 
-            var urlTupleList = new List<Tuple<WebOption, string>>()
+            var urlTupleList = new List<QueueEntry>()
                     {
-                        Tuple.Create(WebOption.Bilibili,url)
+                        new QueueEntry(WebOption.Bilibili,url)
                     };
 
-            playlist.AddUrls(urlTupleList);
+            playlist.Enqueue(urlTupleList);
 
             if (firstTrack)
             {
-                await Context.Interaction.SendFollowupMessageAsync($"{GlobalVariable.botNickname}激情開唱！", display);
+                await Context.Interaction.SendFollowupMessageAsync($"{GlobalVariable.BotNickname}激情開唱！", display);
                 await playlist.StartAsync(Context.Interaction);
             }
             else
@@ -124,13 +133,13 @@ public class SlashCommands : ApplicationCommandModule<ApplicationCommandContext>
     {
         await Utils.DeferResponse(Context, display);
 
-        var (success, result) = await HandleResponseJoinToVC(Context, display);
+        var (success, result) = await HandleResponseJoinToVCAsync(Context, display);
 
         if (success)
         {
             var vc = result.VC;
-            var playlist = PlaylistSystem.GetorCreatePlaylist(Context.Guild, vc, result.ChannelID);
-            bool firstTrack = playlist._urls.Count == 0;
+            var playlist = PlaylistRegistry.GetOrCreate(Context.Guild, vc, result.ChannelId);
+            bool firstTrack = playlist.Queue.Count == 0;
 
             var urls = await MediaProcess.GetPlaylistUrlsAsync(url);
 
@@ -146,14 +155,13 @@ public class SlashCommands : ApplicationCommandModule<ApplicationCommandContext>
             }
 
             var urlTupleList = urls
-                .Select(url => Tuple.Create(WebOption.Youtube, url))
-                .ToList();
+                .Select(url => new QueueEntry(WebOption.Youtube, url));
 
-            playlist.AddUrls(urlTupleList);
+            playlist.Enqueue(urlTupleList);
 
             if (firstTrack)
             {
-                await Context.Interaction.SendFollowupMessageAsync($"{GlobalVariable.botNickname}激情開唱{urls.Count}首音樂！", display);
+                await Context.Interaction.SendFollowupMessageAsync($"{GlobalVariable.BotNickname}激情開唱{urls.Count}首音樂！", display);
                 await playlist.StartAsync(Context.Interaction);
             }
             else
@@ -171,10 +179,10 @@ public class SlashCommands : ApplicationCommandModule<ApplicationCommandContext>
 
         var message = new InteractionMessageProperties()
         {
-            Content = $"目前執行中的{GlobalVariable.botName}由C# dotnet9.0建構(NetCord)，版本 : {GlobalVariable.version}" + Environment.NewLine +
-                      $"Github url (Discord.Net): {GlobalVariable.gitUrl}" + Environment.NewLine +
-                      $"Github url (NetCord): {GlobalVariable.gitUrl2}" + Environment.NewLine +
-                      $"All Credicts to {Utils.MentionWithID(GlobalVariable.creatorID)}",
+            Content = $"目前執行中的{GlobalVariable.BotName}由C# dotnet10.0建構(NetCord)，版本 : {GlobalVariable.Version}" + Environment.NewLine +
+                      $"Github url (Discord.Net): {GlobalVariable.GitUrl}" + Environment.NewLine +
+                      $"Github url (NetCord): {GlobalVariable.GitUrl2}" + Environment.NewLine +
+                      $"All Credicts to {Utils.MentionWithID(GlobalVariable.CreatorID)}",
             Flags = MessageFlags.SuppressEmbeds 
         };
 
@@ -188,14 +196,14 @@ public class SlashCommands : ApplicationCommandModule<ApplicationCommandContext>
         ulong dcid = Context.User.Id;
         try
         {
-            var infos = await GlobalVariable.hoyoLab.GetInfoAsyncByDiscordId(dcid.ToString(), GameType.Genshin);
+            var infos = await GlobalVariable.HoyoLab.GetInfoAsyncByDiscordId(dcid.ToString(), GameType.Genshin);
 
             foreach(var info in infos)
                 await this.FollowupHoyolabInfo(info.UserInfo, "旅行者");
         }
         catch
         {
-            await FollowupAsync($"嗚嗚嗚{GlobalVariable.botNickname}查詢失敗 !");
+            await FollowupAsync($"嗚嗚嗚{GlobalVariable.BotNickname}查詢失敗 !");
         }
 
     }
@@ -207,14 +215,14 @@ public class SlashCommands : ApplicationCommandModule<ApplicationCommandContext>
         ulong dcid = Context.User.Id;
         try
         {
-            var infos = await GlobalVariable.hoyoLab.GetInfoAsyncByDiscordId(dcid.ToString(), GameType.HonkaiStarRail);
+            var infos = await GlobalVariable.HoyoLab.GetInfoAsyncByDiscordId(dcid.ToString(), GameType.HonkaiStarRail);
 
             foreach(var info in infos)
                 await this.FollowupHoyolabInfo(info.UserInfo , "開拓者");
         }
         catch
         {
-            await FollowupAsync($"嗚嗚嗚{GlobalVariable.botNickname}查詢失敗 !");
+            await FollowupAsync($"嗚嗚嗚{GlobalVariable.BotNickname}查詢失敗 !");
         }
 
     }
@@ -226,14 +234,14 @@ public class SlashCommands : ApplicationCommandModule<ApplicationCommandContext>
         ulong dcid = Context.User.Id;
         try
         {
-            var infos = await GlobalVariable.hoyoLab.GetInfoAsyncByDiscordId(dcid.ToString(), GameType.ZenlessZoneZero);
+            var infos = await GlobalVariable.HoyoLab.GetInfoAsyncByDiscordId(dcid.ToString(), GameType.ZenlessZoneZero);
 
             foreach(var info in infos)
                 await this.FollowupHoyolabInfo(info.UserInfo, "繩匠");
         }
         catch
         {
-            await FollowupAsync($"嗚嗚嗚{GlobalVariable.botNickname}查詢失敗 !");
+            await FollowupAsync($"嗚嗚嗚{GlobalVariable.BotNickname}查詢失敗 !");
         }
     }
 
@@ -254,7 +262,7 @@ public class SlashCommands : ApplicationCommandModule<ApplicationCommandContext>
 
             foreach (var set in map)
             {
-                var infos = await GlobalVariable.hoyoLab.GetInfoAsyncByDiscordId(dcid.ToString(), set.Item1);
+                var infos = await GlobalVariable.HoyoLab.GetInfoAsyncByDiscordId(dcid.ToString(), set.Item1);
 
                 foreach (var info in infos)
                 {
@@ -269,14 +277,13 @@ public class SlashCommands : ApplicationCommandModule<ApplicationCommandContext>
                         sf.NewLine();
                     }
                 }
-
             }
 
             string infoText = sf.ToFormattedString().TrimEnd('\r', '\n');
 
             if (infoText.Length < 1)
             {
-                await FollowupAsync($"{GlobalVariable.botNickname}並未收集任何資訊 !");
+                await FollowupAsync($"{GlobalVariable.BotNickname}並未收集任何資訊 !");
             }
             else
             {
@@ -286,7 +293,7 @@ public class SlashCommands : ApplicationCommandModule<ApplicationCommandContext>
         }
         catch
         {
-            await FollowupAsync($"嗚嗚嗚{GlobalVariable.botNickname}查詢失敗 !");
+            await FollowupAsync($"嗚嗚嗚{GlobalVariable.BotNickname}查詢失敗 !");
         }
 
     }
@@ -320,11 +327,11 @@ public class SlashCommands : ApplicationCommandModule<ApplicationCommandContext>
                 await FollowupAsync("你又沒玩 !");
             }
             else
-                await FollowupAsync($"嗚嗚嗚{GlobalVariable.botNickname}查詢失敗 !");
+                await FollowupAsync($"嗚嗚嗚{GlobalVariable.BotNickname}查詢失敗 !");
         }
         else
         {
-            await FollowupAsync($"嗚嗚嗚{GlobalVariable.botNickname}查詢失敗 !");
+            await FollowupAsync($"嗚嗚嗚{GlobalVariable.BotNickname}查詢失敗 !");
         }
     }
 
@@ -335,21 +342,21 @@ public class SlashCommands : ApplicationCommandModule<ApplicationCommandContext>
     {
         await Utils.DeferResponse(Context , display);
 
-        var (success, result) = await HandleResponseJoinToVC(Context,display);
+        var (success, result) = await HandleResponseJoinToVCAsync(Context,display);
 
         if(success)
         {
             var vc = result.VC;
 
-            string fullFilename = new DirectoryInfo(GlobalVariable.soundEffectsFolderPath).GetFiles()
+            string fullFilename = new DirectoryInfo(GlobalVariable.SoundEffectsFolderPath).GetFiles()
                  .FirstOrDefault(f => Path.GetFileNameWithoutExtension(f.Name).Equals(filename, StringComparison.OrdinalIgnoreCase))
                  ?.Name ?? $"{filename}.mp3";
 
-            string absoluteFilePath = Path.GetFullPath(GlobalVariable.soundEffectsFolderPath + fullFilename);
+            string absoluteFilePath = Path.GetFullPath(GlobalVariable.SoundEffectsFolderPath + fullFilename);
 
             if (!File.Exists(absoluteFilePath))
             {
-                await FollowupAsync($"{GlobalVariable.botNickname}無法找到該檔案！");
+                await FollowupAsync($"{GlobalVariable.BotNickname}無法找到該檔案！");
                 return;
             }
 
@@ -359,11 +366,11 @@ public class SlashCommands : ApplicationCommandModule<ApplicationCommandContext>
 
                 if (ffmpeg == null)
                 {
-                    await Context.Interaction.SendFollowupMessageAsync($"{GlobalVariable.botNickname}無法處理音訊 !", display);
+                    await Context.Interaction.SendFollowupMessageAsync($"{GlobalVariable.BotNickname}無法處理音訊 !", display);
                     return;
                 }
 
-                await Context.Interaction.SendFollowupMessageAsync($"{GlobalVariable.botNickname}播放音效 : {filename} !", display);
+                await Context.Interaction.SendFollowupMessageAsync($"{GlobalVariable.BotNickname}播放音效 : {filename} !", display);
                 
                 await MediaProcess.PlayAudioAsync(vc , ffmpeg);
 
@@ -389,7 +396,7 @@ public class SlashCommands : ApplicationCommandModule<ApplicationCommandContext>
 
         ulong serverID = Context.Guild.Id;
 
-        var serverPlaylists = GlobalVariable.concurrentPlaylist.GetPlaylists(serverID);
+        var serverPlaylists = GlobalVariable.ConcurrentPlaylist.GetAll(serverID);
 
         if (addRemove == AddRemoveOption.Modify)
         {
@@ -416,8 +423,12 @@ public class SlashCommands : ApplicationCommandModule<ApplicationCommandContext>
                 await Context.Interaction.SendFollowupMessageAsync("新增歌單不可重名！", display);
                 return;
             }
-            GlobalVariable.concurrentPlaylist.AddOrCreate(serverID, text, url);
-            await Context.Interaction.SendFollowupMessageAsync($"{GlobalVariable.botNickname}成功新增對應歌單 : {text} => {url}", display);
+            if (GlobalVariable.ConcurrentPlaylist.TryAdd(serverID, text, url))
+            {
+                await Context.Interaction.SendFollowupMessageAsync($"{GlobalVariable.BotNickname}成功新增對應歌單 : {text} => {url}", display);
+            }
+            else
+                await Context.Interaction.SendFollowupMessageAsync($"{GlobalVariable.BotNickname}新增歌單失敗！", display);
         }
         else
         {
@@ -426,8 +437,14 @@ public class SlashCommands : ApplicationCommandModule<ApplicationCommandContext>
                 await Context.Interaction.SendFollowupMessageAsync("找不到此歌單，請確認輸入名稱是否一致！", display);
                 return;
             }
-            GlobalVariable.concurrentPlaylist.Remove(serverID, text);
-            await Context.Interaction.SendFollowupMessageAsync($"{GlobalVariable.botNickname}成功刪除歌單 : {text}", display);
+            if (GlobalVariable.ConcurrentPlaylist.TryRemove(serverID, text))
+            {
+                await Context.Interaction.SendFollowupMessageAsync($"{GlobalVariable.BotNickname}成功刪除歌單 : {text}", display);
+            }
+            else
+            {
+                await Context.Interaction.SendFollowupMessageAsync($"{GlobalVariable.BotNickname}刪除歌單失敗！", display);
+            }
         }
 
     }
@@ -446,13 +463,13 @@ public class SlashCommands : ApplicationCommandModule<ApplicationCommandContext>
         {
             await Task.Run(async () =>
             {
-                var downloadAlgorithm = MediaProcess.DetermineDownloadVideoAlgorithm(web);
+                var downloadAlgorithm = MediaProcess.ResolveDownloadVideoAlgorithm(web);
                 string? fullFilePath = await downloadAlgorithm(url, extension);
 
                 if (fullFilePath == null)
                 {
                     Console.WriteLine(fullFilePath);
-                    await FollowupAsync($"嗚嗚嗚{GlobalVariable.botNickname}下載失敗！");
+                    await FollowupAsync($"嗚嗚嗚{GlobalVariable.BotNickname}下載失敗！");
                 }
                 else
                 {
@@ -467,17 +484,17 @@ public class SlashCommands : ApplicationCommandModule<ApplicationCommandContext>
                             int tier = Context.Guild.PremiumTier;
                             int size = 10 ;
 
-                            if (tier > GlobalVariable.serverTierUploadFileSize.Count)
-                                size = GlobalVariable.serverTierUploadFileSize.Last();
+                            if (tier >= GlobalVariable.ServerTierUploadFileSize.Count)
+                                size = GlobalVariable.ServerTierUploadFileSize.Last();
                             else
-                                size = GlobalVariable.serverTierUploadFileSize[tier];
+                                size = GlobalVariable.ServerTierUploadFileSize[tier];
 
                             if(stream.Length / (1024L * 1024L) > size) 
                             {
                                 await Context.Interaction.SendFollowupMessageAsync("偵測到檔案過大，ffmpeg + ffprobe 壓縮中...", display);
 
                                 string Compressed = $"compressed{filename}";
-                                string outputPath = $"{GlobalVariable.downloadFolderPath}{Compressed}";
+                                string outputPath = $"{GlobalVariable.DownloadFolderPath}{Compressed}";
                                 FFmpegCompressor.CompressVideo(fullFilePath, outputPath , size);
 
                                 stream = File.OpenRead(outputPath);
@@ -485,7 +502,7 @@ public class SlashCommands : ApplicationCommandModule<ApplicationCommandContext>
 
                             var message = new InteractionMessageProperties()
                             {
-                                Content = $"{GlobalVariable.botNickname}下載成功！",
+                                Content = $"{GlobalVariable.BotNickname}下載成功！",
                                 Attachments = new[]
                                 {
                                     new AttachmentProperties(filename,stream)
@@ -501,7 +518,7 @@ public class SlashCommands : ApplicationCommandModule<ApplicationCommandContext>
                             try
                             {
                                 string Compressed = $"compressed{filename}";
-                                string outputPath = $"{GlobalVariable.downloadFolderPath}{Compressed}";
+                                string outputPath = $"{GlobalVariable.DownloadFolderPath}{Compressed}";
                                 FFmpegCompressor.CompressVideo(fullFilePath, outputPath);
                                 var stream = File.OpenRead(outputPath);
                                 var message = new InteractionMessageProperties()
@@ -518,7 +535,7 @@ public class SlashCommands : ApplicationCommandModule<ApplicationCommandContext>
                             catch (Exception e)
                             {
                                 Console.WriteLine(e);
-                                await FollowupAsync($"嗚嗚嗚{GlobalVariable.botNickname}壓縮失敗！");
+                                await FollowupAsync($"嗚嗚嗚{GlobalVariable.BotNickname}壓縮失敗！");
                             }
 
                         }
@@ -530,7 +547,7 @@ public class SlashCommands : ApplicationCommandModule<ApplicationCommandContext>
                     }
                     else
                     {
-                        await FollowupAsync($"疑 {GlobalVariable.botNickname}下載完找不到檔案？！");
+                        await FollowupAsync($"疑 {GlobalVariable.BotNickname}下載完找不到檔案？！");
                     }
                 }
 
@@ -538,7 +555,7 @@ public class SlashCommands : ApplicationCommandModule<ApplicationCommandContext>
         }
         catch
         {
-            await FollowupAsync($"{GlobalVariable.botNickname}遇到未知錯誤 ！");
+            await FollowupAsync($"{GlobalVariable.BotNickname}遇到未知錯誤 ！");
         }
 
     }
@@ -580,12 +597,12 @@ public class PlaylistAutocompleteHandler : IAutocompleteProvider<AutocompleteInt
         ulong serverId = context.Interaction.Guild.Id;
         var result = new List<ApplicationCommandOptionChoiceProperties>();
 
-        if (!GlobalVariable.concurrentPlaylist.Exist(serverId))
+        if (!GlobalVariable.ConcurrentPlaylist.HasGuild(serverId))
             return ValueTask.FromResult(result.AsEnumerable());
 
         var current = option.Value;
 
-        foreach (var op in GlobalVariable.concurrentPlaylist.GetPlaylists(serverId)
+        foreach (var op in GlobalVariable.ConcurrentPlaylist.GetAll(serverId)
                         .Where(kvp => (current.Length>0)?kvp.Key.Contains(current, StringComparison.OrdinalIgnoreCase):true)
                         .Take(25))
         {
@@ -600,7 +617,7 @@ public class SoundEffectsAutocompleteHandler : IAutocompleteProvider<Autocomplet
 {
     public ValueTask<IEnumerable<ApplicationCommandOptionChoiceProperties>> GetChoicesAsync(ApplicationCommandInteractionDataOption option, AutocompleteInteractionContext context)
     {
-        string[] files = new DirectoryInfo(GlobalVariable.soundEffectsFolderPath)
+        string[] files = new DirectoryInfo(GlobalVariable.SoundEffectsFolderPath)
             .GetFiles()
             .Where(file => file.Name.EndsWith(".mp3", StringComparison.OrdinalIgnoreCase) || file.Name.EndsWith(".mp4", StringComparison.OrdinalIgnoreCase))
             .Select(file => file.Name)
@@ -657,81 +674,5 @@ public enum ExtensionOption
     [SlashCommandChoice(Name = "Video")]
     Video
 }
-
-
-//    [SlashCommand("聊天", "cuda加速真的好快")]
-//    public async Task ChatWithBot(
-//          [Summary("內容")] string prompt,
-//          DisplayOption display = DisplayOption.Display
-//        )
-//    {
-//        bool eph = SlashCommands.ToEphemeral(display);
-//        await DeferAsync(ephemeral: eph);
-
-//        //_ = Task.Run(async () =>
-//        //{
-//        //    string response = LanguageModelCore.GetModelResponse(prompt , Context.Channel.Id);
-//        //    await FollowupAsync (response,ephemeral:eph);
-//        //});
-//        _ = Task.Run(async () =>
-//        {
-//            const int TIMEOUT_MS = 50_000;
-//            Stopwatch sw = new Stopwatch();
-//            IUserMessage? msg = null;
-//            var res = LanguageModelCore.GetModelResponseToken(prompt, Context.Channel.Id);
-//            sw.Start();
-//            while (string.IsNullOrEmpty(res.Response) && sw.ElapsedMilliseconds < TIMEOUT_MS)
-//            {
-//                if (!String.IsNullOrEmpty(res.Tokens))
-//                {
-//                    if (msg == null)
-//                        msg = await FollowupAsync(res.Tokens);
-//                    else
-//                        await msg.ModifyAsync(prop =>
-//                        {
-//                            prop.Content = res.Tokens;
-//                        });
-//                }
-
-//                await Task.Delay(2000);
-//            }
-
-//            //await FollowupAsync(res.Response);
-
-//            if (msg != null)
-//            {
-//                await Task.Delay(1000);
-//                if (!String.IsNullOrEmpty(res.Response))
-//                {
-//                    await msg.ModifyAsync(prop =>
-//                    {
-//                        prop.Content = $"{res.Response}";
-//                    });
-//                }
-//                else
-//                {
-//                    await msg.ModifyAsync(prop =>
-//                    {
-//                        prop.Content = $"Response timed out after {TIMEOUT_MS / 1000}s.";
-//                    });
-//                }
-
-//            }
-
-
-
-//        });
-//    }
-
-//    [SlashCommand("清空聊天紀錄", "當這逼機器人開始亂回話的時候")]
-//    public async Task ClearChatHistory()
-//    {
-//        await DeferAsync();
-//        LanguageModelCore.ClearChatHistory(Context.Channel.Id);
-//        await FollowupAsync("對話紀錄已清除！");
-//    }
-
-
-//}
 
 
