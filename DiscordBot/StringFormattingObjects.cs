@@ -11,36 +11,19 @@ namespace StringFormatting
             float sum = 0f;
             foreach (char c in text)
             {
-                if ((c >= 0x4E00 && c <= 0x9FFF) ||       
-                    (c >= 0x3400 && c <= 0x4DBF) ||       
-                    (c >= 0x20000 && c <= 0x2A6DF) ||     
-                    (c >= 0x3040 && c <= 0x309F) ||      
-                    (c >= 0x30A0 && c <= 0x30FF) ||       
-                    (c >= 0x31F0 && c <= 0x31FF) ||      
-                    (c >= 0xAC00 && c <= 0xD7AF) ||     
-                    (c >= 0x1100 && c <= 0x11FF))       
+                // \u5168\u5F62\uFF08CJK / \u5047\u540D / \u8AFA\u6587 / \u5168\u5F62\u7B26\u865F\uFF09\u7B97 2 \u683C\uFF0C\u5176\u4ED6\u7B97 1 \u683C\u3002
+                // \u4EE5\u524D\u6709\u4E00\u689D c >= 0x20000 \u7684\u5224\u65B7\uFF1Achar \u6700\u5927\u53EA\u5230 0xFFFF\uFF0C\u6C38\u9060\u4E0D\u6210\u7ACB\uFF1B\u5F8C\u9762\u56DB\u500B\u5206\u652F\u4E5F\u5168\u90E8\u90FD\u662F +1\u3002
+                sum += c switch
                 {
-                    sum += 2f;  
-                }
-      
-                else if (char.IsLetter(c))
-                {
-                    sum += 1f;  
-                }
-    
-                else if (char.IsDigit(c))
-                {
-                    sum += 1f;  
-                }
-
-                else if (c == '.' || "~-=.? \u00A0".Contains(c))
-                {
-                    sum += 1f;  
-                }
-                else
-                {
-                    sum += 1f;  
-                }
+                    >= '\u1100' and <= '\u11FF' => 2f, // \u8AFA\u6587\u5B57\u6BCD
+                    >= '\u3040' and <= '\u30FF' => 2f, // \u5E73\u5047\u540D\u3001\u7247\u5047\u540D
+                    >= '\u31F0' and <= '\u31FF' => 2f, // \u7247\u5047\u540D\u64F4\u5145
+                    >= '\u3400' and <= '\u4DBF' => 2f, // CJK \u64F4\u5145 A
+                    >= '\u4E00' and <= '\u9FFF' => 2f, // CJK
+                    >= '\uAC00' and <= '\uD7AF' => 2f, // \u8AFA\u6587\u97F3\u7BC0
+                    >= '\uFF01' and <= '\uFF60' => 2f, // \u5168\u5F62\u7B26\u865F
+                    _ => 1f,
+                };
             }
             return sum;
         }
@@ -124,6 +107,8 @@ namespace StringFormatting
         {
             this.StringTemps.Clear();
             this.FormatBuilder.Clear();
+            this.MaxColumnWidths.Clear();
+            this.SeparatorMap.Clear();
         }
 
         /// <summary>
@@ -199,8 +184,11 @@ namespace StringFormatting
         /// <summary>
         /// Generate formatted string with optional callback function for progress monitoring.
         /// </summary>
-        public string ToFormattedString(int interval = int.MaxValue, Action<int> CallBack = null)
+        public string ToFormattedString(int interval = int.MaxValue, Action<int>? CallBack = null)
         {
+            // Previously not cleared, so calling it twice duplicated the output
+            this.FormatBuilder.Clear();
+
             string MajorSep = this.GenerateSeparators(Separator.Major);
             string MinorSep = this.GenerateSeparators(Separator.Minor);
 
@@ -257,12 +245,10 @@ namespace StringFormatting
             if (disposing)
             {
 
-                this.StringTemps?.Clear();
-                this.StringTemps = null;
-                this.FormatBuilder?.Clear();
-                this.FormatBuilder = null;
-                this.SeparatorMap?.Clear();
-                this.SeparatorMap = null;
+                this.StringTemps.Clear();
+                this.FormatBuilder.Clear();
+                this.SeparatorMap.Clear();
+                this.MaxColumnWidths.Clear();
             }
 
             this._disposed = true;

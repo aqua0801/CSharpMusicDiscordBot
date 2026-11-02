@@ -1,55 +1,48 @@
 ﻿using NetCord.Gateway;
 using NetCord.Gateway.Voice;
-using Newtonsoft.Json.Linq;
-
 using System.Collections.Concurrent;
 
-namespace DiscordBot
+namespace DiscordBot;
+
+public static class GlobalVariable
 {
-    public static class GlobalVariable
+    public static readonly string DataFolderPath = "Data";
+    public static readonly string FfmpegExePath = Path.Combine(DataFolderPath, "ffmpeg.exe");
+    public static readonly string FfprobeExePath = Path.Combine(DataFolderPath, "ffprobe.exe");
+    public static readonly string YtDlpExePath = "yt-dlp.exe";
+    public static readonly string PlaylistJsonFilePath = Path.Combine(DataFolderPath, "playlist.json");
+    public static readonly string EnvJsonFilePath = Path.Combine(DataFolderPath, "env.json");
+    public static readonly string HoyolabJsonFilePath = Path.Combine(DataFolderPath, "HoyolabServiceJson.json");
+    public static readonly string SoundEffectsFolderPath = Path.Combine(DataFolderPath, "SoundEffects");
+    public static readonly string ImagesFolderPath = Path.Combine(DataFolderPath, "Images", "images");
+    public static readonly string LabelsFolderPath = Path.Combine(DataFolderPath, "Images", "labels");
+    public static readonly string DownloadFolderPath = "Download";
+
+    // ── Settings ─────────────────────────────────────────────────
+    public static BotConfig Config { get; private set; } = new();
+    public static string BotNickname => Config.BotNickname;
+
+    // ── Runtime data ────────────────────────────
+    public static string BotName { get; set; } = "Unknown";
+    public static ulong BotId { get; set; }
+    public static string CreatorName { get; set; } = "Unknown";
+    public static ulong CreatorId { get; set; }
+    public static GatewayClient Client { get; set; } = null!;
+
+    // ── Shared services ─────────────────────────────────────────────
+    public static ConcurrentDictionary<ulong, VoiceClient> ServerVoiceClientMap { get; } = new();
+    public static SavedPlaylistStore SavedPlaylists { get; private set; } = null!;
+    public static HoyoLabService HoyoLab { get; private set; } = null!;
+
+    public static void Init()
     {
-        public static string BotToken = "Unknown";
-        public static string BotName = "Unknown";
-        public static string BotNickname = "Unknown";
-        public static string CreatorName = "Unknown";
+        Config = Json.Read<BotConfig>(EnvJsonFilePath);
+        Config.Validate();
 
-        public static string GitUrl = "";
-        public static string GitUrl2 = "";
-        public static string Version = "0.0.0.0";
-        public const string FfmpegExePath = ".\\Data\\ffmpeg.exe";
-        public const string FfprobeExePath = ".\\Data\\ffprobe.exe";
-        public const string PlaylistJsonFilePath = ".\\Data\\playlist.json";
-        public const string EnvJsonFilePath = ".\\Data\\env.json";
-        public const string SoundEffectsFolderPath = ".\\Data\\SoundEffects\\";
-        public const string DownloadFolderPath = ".\\Download\\";
-        public const string ImagesFolderPath = ".\\Data\\Images\\images\\";
-        public const string LabelsFolderPath = ".\\Data\\Images\\labels\\";
-        public static JObject EnvJsonObject = new JObject();
-        public static char CommandPrefix = '!';
-        public static bool ResinLoopCheck = false;
+        Directory.CreateDirectory(DownloadFolderPath);
 
-        public static ulong BotID;
-        public static ulong CreatorID;
-
-        public static GatewayClient client;
-
-        public static ConcurrentBag<Timer> PermanentTimers = new ConcurrentBag<Timer>();
-        public static SavedPlaylistStore ConcurrentPlaylist = new SavedPlaylistStore(GlobalVariable.PlaylistJsonFilePath, true);
-        public static ConcurrentDictionary<ulong, VoiceClient> ServerVoiceClientMap = new ConcurrentDictionary<ulong, VoiceClient>();
-        public static HoyoLabService HoyoLab = new HoyoLabService();
-        public static List<int> ServerTierUploadFileSize;
-
-        public static void Init()
-        {
-            GlobalVariable.EnvJsonObject = Json.Read(GlobalVariable.EnvJsonFilePath);
-            GlobalVariable.BotToken = GlobalVariable.EnvJsonObject.GetValueOrDefault<string>("bot_token");
-            GlobalVariable.BotNickname = GlobalVariable.EnvJsonObject.GetValueOrDefault<string>("bot_nickname");
-            GlobalVariable.Version = GlobalVariable.EnvJsonObject.GetValueOrDefault<string>("version");
-            GlobalVariable.GitUrl = GlobalVariable.EnvJsonObject.GetValueOrDefault<string>("git_repo_link");
-            GlobalVariable.GitUrl2 = GlobalVariable.EnvJsonObject.GetValueOrDefault<string>("git_repo_link2");
-            GlobalVariable.ServerTierUploadFileSize = GlobalVariable.EnvJsonObject.GetValueOrDefault<List<int>>("server_tier_file_size");
-            GlobalVariable.CommandPrefix = GlobalVariable.EnvJsonObject.GetValueOrDefault<char>("prefix");
-            GlobalVariable.ResinLoopCheck = GlobalVariable.EnvJsonObject.GetValueOrDefault<bool>("resin_loop_check");
-        }
+        SavedPlaylists = new SavedPlaylistStore(PlaylistJsonFilePath);
+        HoyoLab = HoyoLabService.LoadOrEmpty(HoyolabJsonFilePath);
+        Directory.CreateDirectory(Path.Combine(AppContext.BaseDirectory, "Download"));
     }
 }

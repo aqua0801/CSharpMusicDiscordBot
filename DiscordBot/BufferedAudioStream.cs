@@ -1,105 +1,73 @@
-﻿public sealed class BufferedAudioStream : Stream
+﻿using System.Threading.Channels;
+
+namespace DiscordBot;
+
+/// <summary>
+/// Continuously reads ffmpeg's PCM output into memory so ffmpeg keeps draining the network stream while paused (avoids source connection timeouts).
+///
+/// Two problems with the old version:
+/// 1. It kept the whole song in one MemoryStream and never released played data — a 1-hour song ≈ 690MB of PCM stuck in memory.
+///    Now it's a chunk queue; chunks that have been read are left to the GC.
+/// 2. ReadAsync returned 0 while paused, and Playlist treats 0 as "end of song" → pressing pause could skip to the next song.
+///    Pausing is now handled by Playlist itself (it just stops reading); this class no longer cares.
+/// </summary>
+public sealed class BufferedAudioStream
 {
-    private readonly MemoryStream _buffer = new();
-    private readonly object _lock = new();
-    private readonly SemaphoreSlim _dataReady = new(0);
-
-    private long _readPosition;
-    private bool _isPaused;
-    private bool _feedComplete;
-
-    public override bool CanRead => true;
-    public override bool CanSeek => false;
-    public override bool CanWrite => false;
-    public override long Length => _buffer.Length;
-    public override long Position
+    private readonly Channel<byte[]> _chunks = Channel.CreateUnbounded<byte[]>(new UnboundedChannelOptions
     {
-        get => _readPosition;
-        set => throw new NotSupportedException();
-    }
+        SingleReader = true,
+        SingleWriter = true,
+    });
 
-
-    public void Pause()
-    {
-        lock (_lock) _isPaused = true;
-    }
-
-    public void Resume()
-    {
-        lock (_lock)
-        {
-            _isPaused = false;
-            _dataReady.Release();
-        }
-    }
-
+    private byte[]? _current;
+    private int _currentOffset;
 
     public async Task FeedFromStreamAsync(Stream source, CancellationToken ct = default)
     {
-        var temp = new byte[4096];
+        Exception? error = null;
         try
         {
+            var temp = new byte[16 * 1024];
             int bytesRead;
             while ((bytesRead = await source.ReadAsync(temp, ct)) > 0)
-            {
-                lock (_lock)
-                {
-                    long savedPos = _buffer.Position;
-                    _buffer.Position = _buffer.Length;
-                    _buffer.Write(temp, 0, bytesRead);
-                    _buffer.Position = savedPos;
-                }
-                _dataReady.Release();
-            }
+                await _chunks.Writer.WriteAsync(temp.AsSpan(0, bytesRead).ToArray(), ct);
         }
-        catch (OperationCanceledException) { }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
+        catch (Exception ex)
+        {
+            // Don't throw here: the exception is passed to the reader via TryComplete(error) and logged by the playback loop.
+            error = ex;
+        }
         finally
         {
-            _feedComplete = true;
-            _dataReady.Release();
+            _chunks.Writer.TryComplete(error);
         }
     }
 
-
-    public override async Task<int> ReadAsync(
-        byte[] buffer, int offset, int count, CancellationToken ct)
+    /// <summary>Reads data; returns 0 when the source has ended (or was cancelled).</summary>
+    public async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken ct)
     {
-        while (true)
+        try
         {
-            if (ct.IsCancellationRequested) return 0;
-
-            lock (_lock)
+            while (_current is null || _currentOffset >= _current.Length)
             {
-                if (_isPaused) return 0;
-
-                if (_readPosition < _buffer.Length)
+                if (!await _chunks.Reader.WaitToReadAsync(ct))
+                    return 0;
+                if (_chunks.Reader.TryRead(out var next))
                 {
-                    _buffer.Position = _readPosition;
-                    int toRead = (int)Math.Min(count, _buffer.Length - _readPosition);
-                    int read = _buffer.Read(buffer, offset, toRead);
-                    _readPosition += read;
-                    return read;
+                    _current = next;
+                    _currentOffset = 0;
                 }
-
-                if (_feedComplete) return 0;
             }
-
-            await _dataReady.WaitAsync(ct);
         }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            return 0;
+        }
+
+        int toCopy = Math.Min(buffer.Length, _current.Length - _currentOffset);
+        _current.AsMemory(_currentOffset, toCopy).CopyTo(buffer);
+        _currentOffset += toCopy;
+        return toCopy;
     }
-
-    public override int Read(byte[] buffer, int offset, int count)
-        => ReadAsync(buffer, offset, count).GetAwaiter().GetResult();
-
-    protected override void Dispose(bool disposing)
-    {
-        if (disposing) { _buffer.Dispose(); _dataReady.Dispose(); }
-        base.Dispose(disposing);
-    }
-
-
-    public override void Flush() => throw new NotSupportedException();
-    public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
-    public override void SetLength(long value) => throw new NotSupportedException();
-    public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
 }

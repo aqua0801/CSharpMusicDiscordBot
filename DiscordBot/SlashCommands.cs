@@ -1,662 +1,456 @@
-﻿using DiscordBot;
-using Humanizer;
-using NetCord;
-using NetCord.Gateway;
+﻿using NetCord;
 using NetCord.Gateway.Voice;
 using NetCord.Rest;
 using NetCord.Services;
 using NetCord.Services.ApplicationCommands;
+using System.Net;
+using System.Runtime.InteropServices;
+using System.Text;
 
+namespace DiscordBot;
 
+/// <summary>
+/// Unhandled exceptions in commands become IExceptionResult, which Program.cs logs and reports to the user,
+/// so there's no more try { } catch { } everywhere swallowing errors.
+/// </summary>
 public class SlashCommands : ApplicationCommandModule<ApplicationCommandContext>
 {
-    public static bool ToEphemeral(DisplayOption display) => display == DisplayOption.Hide;
+    // ── Shared voice helpers ───────────────────────────────────────
 
-    public static async Task<(bool Success, JoinResult Result)> HandleResponseJoinToVCAsync<T>(
-        T context, DisplayOption display)
+    public static async Task<(bool Success, JoinResult Result)> HandleResponseJoinToVCAsync<T>(T context, DisplayOption display)
         where T : IUserContext, IGuildContext, IInteractionContext
     {
-        JoinResult? joinResult = null;
-        try
+        var joinResult = await VoiceManager.JoinToUserVCAsync(context);
+
+        string? failMessage = joinResult switch
         {
-            joinResult = await Utils.JoinToUserVC(context);
+            { ToUserState: JoinToUserState.NotInGuild } => "這個指令只能在伺服器裡使用！",
+            { ToUserState: JoinToUserState.UserNotInVC } => "你不在頻道裡喔！",
+            { JoinState: not JoinState.Success } or { VC: null } => $"無法加入聊天室！{(joinResult.Error is null ? "" : $"（{UserMessages.FromException(joinResult.Error)}）")}",
+            _ => null,
+        };
 
-            if (joinResult.ToUserState == JoinToUserState.UserNotInVC)
-            {
-                await context.Interaction.SendFollowupMessageAsync("你不在頻道裡喔！", display);
-                return (false, joinResult);
-            }
-
-            if (joinResult.JoinState == JoinState.Fail || joinResult.VC is null)
-            {
-                await context.Interaction.SendFollowupMessageAsync("無法加入聊天室！", display);
-                return (false, joinResult);
-            }
-
-            int retryCount = 0;
-            while (joinResult.VC.Status != WebSocketStatus.Ready)
-            {
-                retryCount++;
-                if(retryCount%100==0 && retryCount!=0)
-                    Console.WriteLine($"[Warning] HandleResponseJoinToVCAsync 連接尚未準備好，已等待 {retryCount * 100} ms");
-                await Task.Delay(100);
-            }
-
-            await joinResult.VC.EnterSpeakingStateAsync(new SpeakingProperties(SpeakingFlags.Microphone));
-            return (true, joinResult);
-        }
-        catch (Exception ex)
+        if (failMessage is not null)
         {
-            Console.WriteLine($"[Error] HandleResponseJoinToVCAsync 失敗：{ex}");
-            return (false, joinResult ?? new JoinResult { JoinState = JoinState.Fail });
+            await context.Interaction.SendFollowupMessageAsync(failMessage, display);
+            return (false, joinResult);
         }
+
+        await joinResult.VC!.EnterSpeakingStateAsync(new SpeakingProperties(SpeakingFlags.Microphone));
+        return (true, joinResult);
     }
 
-    [SlashCommand("yt點歌", $"客服小祥激情開唱")]
-    public async Task PlayMusicFromYoutubeUrl(
-        [SlashCommandParameter(Name = "網址")] string url,
-        DisplayOption display = DisplayOption.Display
-        )
+    private async Task EnqueueAndPlayAsync(DisplayOption display, Func<Task<IReadOnlyList<QueueEntry>?>> resolveEntries)
     {
-        await Utils.DeferResponse(Context,display);
-
-        var (success, result) = await HandleResponseJoinToVCAsync(Context,display);
-
-        if(success)
-        {
-            var vc = result.VC;
-
-            var playlist = PlaylistRegistry.GetOrCreate(Context.Guild, vc , result.ChannelId);
-            bool firstTrack = playlist.Queue.Count == 0;
-
-            var urlTupleList = new List<QueueEntry>()
-                    {
-                        new QueueEntry(WebOption.Youtube,url)
-                    };
-
-            playlist.Enqueue(urlTupleList);
-
-            if (firstTrack)
-            {
-                await Context.Interaction.SendFollowupMessageAsync($"{GlobalVariable.BotNickname}激情開唱！", display);
-                await playlist.StartAsync(Context.Interaction);
-            }
-            else
-            {
-                await Context.Interaction.SendFollowupMessageAsync($"成功插入1首歌！", display);
-            }
-        }
-    }
-
-    [SlashCommand("bilibili點歌", $"客服小祥激情開唱")]
-    public async Task PlayMusicFromBilibiliUrl(
-        [SlashCommandParameter(Name = "網址")] string url,
-        DisplayOption display = DisplayOption.Display
-        )
-    {
-        await Utils.DeferResponse(Context, display);
+        await Utils.DeferResponseAsync(Context, display);
 
         var (success, result) = await HandleResponseJoinToVCAsync(Context, display);
+        if (!success) return;
 
-        if (success)
+        var entries = await resolveEntries();
+        if (entries is null || entries.Count == 0)
         {
-            var vc = result.VC;
-
-            var playlist = PlaylistRegistry.GetOrCreate(Context.Guild, vc , result.ChannelId);
-            bool firstTrack = playlist.Queue.Count == 0;
-
-            var urlTupleList = new List<QueueEntry>()
-                    {
-                        new QueueEntry(WebOption.Bilibili,url)
-                    };
-
-            playlist.Enqueue(urlTupleList);
-
-            if (firstTrack)
-            {
-                await Context.Interaction.SendFollowupMessageAsync($"{GlobalVariable.BotNickname}激情開唱！", display);
-                await playlist.StartAsync(Context.Interaction);
-            }
-            else
-            {
-                await Context.Interaction.SendFollowupMessageAsync($"成功插入1首歌！", display);
-            }
+            await Context.Interaction.SendFollowupMessageAsync("無法解析或歌單無效！", display);
+            return;
         }
+
+        var playlist = PlaylistRegistry.GetOrCreate(Context.Guild!.Id, result.VC!, result.ChannelId);
+        playlist.Enqueue(entries);
+
+        if (playlist.TryStart(Context.Interaction))
+            await Context.Interaction.SendFollowupMessageAsync($"{GlobalVariable.BotNickname}激情開唱{(entries.Count > 1 ? $"{entries.Count}首音樂" : "")}！", display);
+        else
+            await Context.Interaction.SendFollowupMessageAsync($"成功插入{entries.Count}首歌！", display);
     }
 
-    [SlashCommand("yt歌單", $"客服小祥激情開唱")]
-    public async Task PlayMusicFromYoutubePlaylist(
-        [SlashCommandParameter( AutocompleteProviderType = typeof(PlaylistAutocompleteHandler))]  string url,
+    [SlashCommand("yt點歌", "客服小祥激情開唱", Contexts = new[] { InteractionContextType.Guild })]
+    public Task PlayMusicFromYoutubeUrl(
+        [SlashCommandParameter(Name = "網址")] string url,
+        DisplayOption display = DisplayOption.Display)
+        => EnqueueAndPlayAsync(display, () => Task.FromResult<IReadOnlyList<QueueEntry>?>([new QueueEntry(WebOption.Youtube, url)]));
+
+    [SlashCommand("bilibili點歌", "客服小祥激情開唱", Contexts = new[] { InteractionContextType.Guild })]
+    public Task PlayMusicFromBilibiliUrl(
+        [SlashCommandParameter(Name = "網址")] string url,
+        DisplayOption display = DisplayOption.Display)
+        => EnqueueAndPlayAsync(display, () => Task.FromResult<IReadOnlyList<QueueEntry>?>([new QueueEntry(WebOption.Bilibili, url)]));
+
+    [SlashCommand("yt歌單", "客服小祥激情開唱", Contexts = new[] { InteractionContextType.Guild })]
+    public Task PlayMusicFromYoutubePlaylist(
+        [SlashCommandParameter(AutocompleteProviderType = typeof(PlaylistAutocompleteHandler))] string url,
         RandomOption random,
-        DisplayOption display = DisplayOption.Display
-        )
-    {
-        await Utils.DeferResponse(Context, display);
-
-        var (success, result) = await HandleResponseJoinToVCAsync(Context, display);
-
-        if (success)
+        DisplayOption display = DisplayOption.Display)
+        => EnqueueAndPlayAsync(display, async () =>
         {
-            var vc = result.VC;
-            var playlist = PlaylistRegistry.GetOrCreate(Context.Guild, vc, result.ChannelId);
-            bool firstTrack = playlist.Queue.Count == 0;
-
-            var urls = await MediaProcess.GetPlaylistUrlsAsync(url);
-
-            if (urls == null || urls.Count < 1)
+            List<string> urls;
+            try
             {
-                await Context.Interaction.SendFollowupMessageAsync($"無法解析或歌單無效！", display);
-                return;
+                urls = await MediaProcess.GetPlaylistUrlsAsync(url);
+            }
+            catch (Exception ex)
+            {
+                Log.Warn($"Failed to parse YouTube playlist {url}", ex);
+                return null;
             }
 
             if (random == RandomOption.Random)
-            {
-                urls.Shuffle();
-            }
+                Random.Shared.Shuffle(CollectionsMarshal.AsSpan(urls));
 
-            var urlTupleList = urls
-                .Select(url => new QueueEntry(WebOption.Youtube, url));
+            return urls.Select(u => new QueueEntry(WebOption.Youtube, u)).ToList();
+        });
 
-            playlist.Enqueue(urlTupleList);
+    // ── Misc ─────────────────────────────────────────────────────
 
-            if (firstTrack)
-            {
-                await Context.Interaction.SendFollowupMessageAsync($"{GlobalVariable.BotNickname}激情開唱{urls.Count}首音樂！", display);
-                await playlist.StartAsync(Context.Interaction);
-            }
-            else
-            {
-                await Context.Interaction.SendFollowupMessageAsync($"成功插入{urls.Count}首歌！", display);
-            }
-
-        }
-    }
-
-    [SlashCommand("開源", $"我超 盒")]
-    public async Task Credicts()
+    [SlashCommand("開源", "我超 盒")]
+    public async Task Credits()
     {
-        await Utils.DeferResponse(Context,DisplayOption.Display);
+        await Utils.DeferResponseAsync(Context, DisplayOption.Display);
 
-        var message = new InteractionMessageProperties()
+        var config = GlobalVariable.Config;
+        await FollowupAsync(new InteractionMessageProperties
         {
-            Content = $"目前執行中的{GlobalVariable.BotName}由C# dotnet10.0建構(NetCord)，版本 : {GlobalVariable.Version}" + Environment.NewLine +
-                      $"Github url (Discord.Net): {GlobalVariable.GitUrl}" + Environment.NewLine +
-                      $"Github url (NetCord): {GlobalVariable.GitUrl2}" + Environment.NewLine +
-                      $"All Credicts to {Utils.MentionWithID(GlobalVariable.CreatorID)}",
-            Flags = MessageFlags.SuppressEmbeds 
-        };
-
-        await Context.Interaction.SendFollowupMessageAsync(message);
+            Content = $"目前執行中的{GlobalVariable.BotName}由C# dotnet10.0建構(NetCord)，版本 : {config.Version}\n" +
+                      $"Github url (Discord.Net): {config.GitUrl}\n" +
+                      $"Github url (NetCord): {config.GitUrl2}\n" +
+                      $"All Credits to {Utils.MentionWithID(GlobalVariable.CreatorId)}",
+            Flags = MessageFlags.SuppressEmbeds,
+        });
     }
 
-    [SlashCommand("原神體力", $"原神啟動")]
-    public async Task CheckGenshinResin()
-    {
-        await Utils.DeferResponse(Context,DisplayOption.Display);
-        ulong dcid = Context.User.Id;
-        try
-        {
-            var infos = await GlobalVariable.HoyoLab.GetInfoAsyncByDiscordId(dcid.ToString(), GameType.Genshin);
+    // ── HoYoLAB ──────────────────────────────────────────────────
 
-            foreach(var info in infos)
-                await this.FollowupHoyolabInfo(info.UserInfo, "旅行者");
-        }
-        catch
-        {
-            await FollowupAsync($"嗚嗚嗚{GlobalVariable.BotNickname}查詢失敗 !");
-        }
+    [SlashCommand("原神體力", "原神啟動")]
+    public Task CheckGenshinResin() => ReplyResinAsync(GameType.Genshin);
 
-    }
-
-    [SlashCommand("崩鐵體力", $"沒人覺得DoT隊很詭異嗎")]
-    public async Task CheckHsrResin()
-    {
-        await Utils.DeferResponse(Context, DisplayOption.Display);
-        ulong dcid = Context.User.Id;
-        try
-        {
-            var infos = await GlobalVariable.HoyoLab.GetInfoAsyncByDiscordId(dcid.ToString(), GameType.HonkaiStarRail);
-
-            foreach(var info in infos)
-                await this.FollowupHoyolabInfo(info.UserInfo , "開拓者");
-        }
-        catch
-        {
-            await FollowupAsync($"嗚嗚嗚{GlobalVariable.BotNickname}查詢失敗 !");
-        }
-
-    }
+    [SlashCommand("崩鐵體力", "沒人覺得DoT隊很詭異嗎")]
+    public Task CheckHsrResin() => ReplyResinAsync(GameType.HonkaiStarRail);
 
     [SlashCommand("絕區零體力", "那反舌鳥怎麼辦?")]
-    public async Task CheckZzzBattery()
-    {
-        await Utils.DeferResponse(Context, DisplayOption.Display);
-        ulong dcid = Context.User.Id;
-        try
-        {
-            var infos = await GlobalVariable.HoyoLab.GetInfoAsyncByDiscordId(dcid.ToString(), GameType.ZenlessZoneZero);
+    public Task CheckZzzBattery() => ReplyResinAsync(GameType.ZenlessZoneZero);
 
-            foreach(var info in infos)
-                await this.FollowupHoyolabInfo(info.UserInfo, "繩匠");
-        }
-        catch
-        {
-            await FollowupAsync($"嗚嗚嗚{GlobalVariable.BotNickname}查詢失敗 !");
-        }
+    private async Task ReplyResinAsync(GameType type)
+    {
+        await Utils.DeferResponseAsync(Context, DisplayOption.Display);
+
+        var infos = await GlobalVariable.HoyoLab.GetInfoByDiscordIdAsync(Context.User.Id, type);
+        foreach (var info in infos)
+            await FollowupAsync(FormatHoyolabInfo(info.UserInfo, HoyoLabService.GetMeta(type).PlayerCallName));
     }
+
+    private static string FormatHoyolabInfo(HoyolabUserInfo info, string callName) => info.Status switch
+    {
+        CheckStatus.Success =>
+            $"{callName} : {info.Name}\n" +
+            $"每日進度 : {info.GetDailyProgress()} [{(info.IsDailyDone() ? "已完成" : "未完成")}]\n" +
+            $"目前體力 : {info.CurrentResin}/{info.MaxResin}\n" +
+            $"預計滿體力時間 : {info.MaxAt:yyyy-MM-dd HH:mm:ss}\n" +
+            HoyolabNotifier.FormatRemaining(info.RecoveryTime),
+        CheckStatus.UserNotFound => "你不在名單中 !",
+        CheckStatus.UserNotRegister => "你又沒玩 !",
+        _ => $"嗚嗚嗚{GlobalVariable.BotNickname}查詢 {info.Name} 失敗 !{(info.ErrorMessage is null ? "" : $"\n原因：{info.ErrorMessage}")}",
+    };
 
     [SlashCommand("體力總結", "查成分!")]
     public async Task CheckAllGamesResin()
     {
-        await Utils.DeferResponse(Context, DisplayOption.Display);
-        ulong dcid = Context.User.Id;
-        try
+        await Utils.DeferResponseAsync(Context, DisplayOption.Display);
+
+        (GameType Type, string Label)[] games =
+        [
+            (GameType.Genshin, "Genshin"), (GameType.HonkaiStarRail, "Hsr"), (GameType.ZenlessZoneZero, "Zzz"),
+        ];
+
+        var sf = new StringFormatting.StringFormatter(StringFormatting.StringFormatter.PadAlign.Right, 100) { PaddingSpace = 2 };
+        var errors = new StringBuilder();
+
+        foreach (var (type, label) in games)
         {
-            var map = new[]
+            foreach (var info in await GlobalVariable.HoyoLab.GetInfoByDiscordIdAsync(Context.User.Id, type))
             {
-                (GameType.Genshin,"Genshin"),(GameType.HonkaiStarRail,"Hsr"),(GameType.ZenlessZoneZero,"Zzz")
-            };
-
-            StringFormatting.StringFormatter sf = new StringFormatting.StringFormatter(StringFormatting.StringFormatter.PadAlign.Right, 100);
-            sf.PaddingSpace = 2;
-
-            foreach (var set in map)
-            {
-                var infos = await GlobalVariable.HoyoLab.GetInfoAsyncByDiscordId(dcid.ToString(), set.Item1);
-
-                foreach (var info in infos)
+                var u = info.UserInfo;
+                if (u.Status == CheckStatus.UnknownError)
                 {
-                    var uinfo = info.UserInfo;
-                    var dailyProgress = uinfo.GetDailyProgress().ToColored(uinfo.IsDailyDone()?AnsiHelper.AnsiColor.Gray:AnsiHelper.AnsiColor.Red);
-                    if (info != null && uinfo.Status == CheckStatus.Success)
-                    {
-                        sf.AddStringTemps($"[{set.Item2}]", 0);
-                        sf.AddStringTemps($"[{uinfo.CurrentResin}/{uinfo.MaxResin}]", 1);
-                        sf.AddStringTemps($"[{dailyProgress}]", 2);
-                        sf.AddStringTemps($"[{uinfo.Name}]");
-                        sf.NewLine();
-                    }
+                    errors.AppendLine($"[{label}] {u.Name} 查詢失敗：{u.ErrorMessage}");
+                    continue;
                 }
-            }
+                if (u.Status != CheckStatus.Success)
+                    continue;
 
-            string infoText = sf.ToFormattedString().TrimEnd('\r', '\n');
-
-            if (infoText.Length < 1)
-            {
-                await FollowupAsync($"{GlobalVariable.BotNickname}並未收集任何資訊 !");
-            }
-            else
-            {
-                infoText = AnsiHelper.WrapAnsiBlock(infoText);
-                await FollowupAsync($"{infoText}");
+                var dailyProgress = u.GetDailyProgress().ToColored(u.IsDailyDone() ? AnsiHelper.AnsiColor.Gray : AnsiHelper.AnsiColor.Red);
+                sf.AddStringTemps($"[{label}]", 0);
+                sf.AddStringTemps($"[{u.CurrentResin}/{u.MaxResin}]", 1);
+                sf.AddStringTemps($"[{dailyProgress}]", 2);
+                sf.AddStringTemps($"[{u.Name}]");
+                sf.NewLine();
             }
         }
-        catch
+
+        string infoText = sf.ToFormattedString().TrimEnd('\r', '\n');
+        string errorText = errors.ToString().TrimEnd();
+
+        if (infoText.Length == 0 && errorText.Length == 0)
         {
-            await FollowupAsync($"嗚嗚嗚{GlobalVariable.BotNickname}查詢失敗 !");
+            await FollowupAsync($"{GlobalVariable.BotNickname}並未收集任何資訊 !");
+            return;
         }
 
+        var reply = new StringBuilder();
+        if (infoText.Length > 0) reply.AppendLine(AnsiHelper.WrapAnsiBlock(infoText));
+        if (errorText.Length > 0) reply.Append(errorText);
+        await FollowupAsync(reply.ToString());
     }
 
+    // ── Soundboard ───────────────────────────────────────────────
 
-    private async Task FollowupHoyolabInfo(HoyolabUserInfo info, string callname)
-    {
-        if (info != null)
-        {
-            if (info.Status == CheckStatus.Success)
-            {
-                string humanized = info.RecoveryTime.Humanize(2, collectionSeparator: " ");
-                string remainingTime = (info.RecoveryTime >= TimeSpan.Zero) ?
-                    $"剩餘 : {humanized}" :
-                    $"超出 : {humanized}";
-                string dailyString = (info.IsDailyDone()) ? "已完成" : "未完成";
-
-                await FollowupAsync(
-                    $"{callname} : {info.Name}{Environment.NewLine}" +
-                    $"每日進度 : {info.GetDailyProgress()} [{dailyString}]{Environment.NewLine}"+
-                    $"目前體力 : {info.CurrentResin}/{info.MaxResin}{Environment.NewLine}" +
-                    $"預計滿體力時間 : {info.MaxAt:yyyy-MM-dd HH:mm:ss}{Environment.NewLine}" +
-                    $"{remainingTime}");
-            }
-            else if (info.Status == CheckStatus.UserNotFound)
-            {
-                await FollowupAsync("你不在名單中 !");
-            }
-            else if (info.Status == CheckStatus.UserNotRegister)
-            {
-                await FollowupAsync("你又沒玩 !");
-            }
-            else
-                await FollowupAsync($"嗚嗚嗚{GlobalVariable.BotNickname}查詢失敗 !");
-        }
-        else
-        {
-            await FollowupAsync($"嗚嗚嗚{GlobalVariable.BotNickname}查詢失敗 !");
-        }
-    }
-
-    [SlashCommand("音效板", "上班摸魚寫的")]
+    [SlashCommand("音效板", "上班摸魚寫的", Contexts = new[] { InteractionContextType.Guild })]
     public async Task PlaySoundEffect(
         [SlashCommandParameter(AutocompleteProviderType = typeof(SoundEffectsAutocompleteHandler))] string filename,
         DisplayOption display = DisplayOption.Display)
     {
-        await Utils.DeferResponse(Context , display);
+        await Utils.DeferResponseAsync(Context, display);
 
-        var (success, result) = await HandleResponseJoinToVCAsync(Context,display);
-
-        if(success)
+        // Only accept files that actually exist in the folder; previously a miss fell back to "{filename}.mp3", allowing ..\ to escape the folder
+        string? path = SoundEffectsAutocompleteHandler.FindSoundEffect(filename);
+        if (path is null)
         {
-            var vc = result.VC;
-
-            string fullFilename = new DirectoryInfo(GlobalVariable.SoundEffectsFolderPath).GetFiles()
-                 .FirstOrDefault(f => Path.GetFileNameWithoutExtension(f.Name).Equals(filename, StringComparison.OrdinalIgnoreCase))
-                 ?.Name ?? $"{filename}.mp3";
-
-            string absoluteFilePath = Path.GetFullPath(GlobalVariable.SoundEffectsFolderPath + fullFilename);
-
-            if (!File.Exists(absoluteFilePath))
-            {
-                await FollowupAsync($"{GlobalVariable.BotNickname}無法找到該檔案！");
-                return;
-            }
-
-            await Task.Run(async () =>
-            {
-                var ffmpeg = await MediaProcess.CreateLocalAsync(absoluteFilePath);
-
-                if (ffmpeg == null)
-                {
-                    await Context.Interaction.SendFollowupMessageAsync($"{GlobalVariable.BotNickname}無法處理音訊 !", display);
-                    return;
-                }
-
-                await Context.Interaction.SendFollowupMessageAsync($"{GlobalVariable.BotNickname}播放音效 : {filename} !", display);
-                
-                await MediaProcess.PlayAudioAsync(vc , ffmpeg);
-
-            });
+            await Context.Interaction.SendFollowupMessageAsync($"{GlobalVariable.BotNickname}無法找到該檔案！", display);
+            return;
         }
+
+        var (success, result) = await HandleResponseJoinToVCAsync(Context, display);
+        if (!success) return;
+
+        var ffmpeg = MediaProcess.StartLocalProcess(path);
+        await Context.Interaction.SendFollowupMessageAsync($"{GlobalVariable.BotNickname}播放音效 : {filename} !", display);
+        await MediaProcess.PlayAudioAsync(result.VC!, ffmpeg);
     }
 
-    [SlashCommand("新增刪除歌單", "選擇新增或是刪除歌單")]
+    // ── Playlist management ──────────────────────────────────────
+
+    [SlashCommand("新增刪除歌單", "選擇新增或是刪除歌單", Contexts = new[] { InteractionContextType.Guild })]
     public async Task AddRemovePlaylist(
-        [SlashCommandParameter(Name = "歌單名稱" , AutocompleteProviderType = typeof(PlaylistAutocompleteHandler))] string text,
+        [SlashCommandParameter(Name = "歌單名稱", AutocompleteProviderType = typeof(PlaylistAutocompleteHandler))] string text,
         [SlashCommandParameter(Name = "對應網址", Description = "新增歌單對應網址，刪除歌單不用填")] string url = "",
         [SlashCommandParameter(Name = "新增刪除", Description = "新增或刪除歌單")] AddRemoveOption addRemove = AddRemoveOption.Add,
-        DisplayOption display = DisplayOption.Display
-        )
+        DisplayOption display = DisplayOption.Display)
     {
-        await Utils.DeferResponse(Context,display);
+        await Utils.DeferResponseAsync(Context, display);
 
-        if (addRemove == AddRemoveOption.Add && String.IsNullOrEmpty(url))
+        if (Context.Guild is not { } guild)
         {
-            await Context.Interaction.SendFollowupMessageAsync($"新增歌單功能需填入對應網址！", display);
+            await Context.Interaction.SendFollowupMessageAsync("這個指令只能在伺服器裡使用！", display);
             return;
         }
 
-        ulong serverID = Context.Guild.Id;
+        var store = GlobalVariable.SavedPlaylists;
+        string nick = GlobalVariable.BotNickname;
 
-        var serverPlaylists = GlobalVariable.ConcurrentPlaylist.GetAll(serverID);
-
-        if (addRemove == AddRemoveOption.Modify)
+        string reply = addRemove switch
         {
-            if(String.IsNullOrEmpty(url) )
-            {
-                await Context.Interaction.SendFollowupMessageAsync($"修改歌單功能未填入對應網址！", display);
-            }
-            else if(!serverPlaylists.TryGetValue(text,out var cache))
-            {
-                await Context.Interaction.SendFollowupMessageAsync($"修改歌單功能該歌單不存在！", display);
-            }
-            else
-            {
-                serverPlaylists[text] = url;
-                await Context.Interaction.SendFollowupMessageAsync($"修改完成 : {text} : {cache} => {url}！", display);
-            }
-            return;
-        }
+            AddRemoveOption.Add when string.IsNullOrWhiteSpace(url) => "新增歌單功能需填入對應網址！",
+            AddRemoveOption.Add when store.TryAdd(guild.Id, text, url) => $"{nick}成功新增對應歌單 : {text} => {url}",
+            AddRemoveOption.Add => "新增歌單不可重名！",
 
-        if (addRemove == AddRemoveOption.Add)
-        {
-            if (serverPlaylists.ContainsKey(text))
-            {
-                await Context.Interaction.SendFollowupMessageAsync("新增歌單不可重名！", display);
-                return;
-            }
-            if (GlobalVariable.ConcurrentPlaylist.TryAdd(serverID, text, url))
-            {
-                await Context.Interaction.SendFollowupMessageAsync($"{GlobalVariable.BotNickname}成功新增對應歌單 : {text} => {url}", display);
-            }
-            else
-                await Context.Interaction.SendFollowupMessageAsync($"{GlobalVariable.BotNickname}新增歌單失敗！", display);
-        }
-        else
-        {
-            if (!serverPlaylists.ContainsKey(text))
-            {
-                await Context.Interaction.SendFollowupMessageAsync("找不到此歌單，請確認輸入名稱是否一致！", display);
-                return;
-            }
-            if (GlobalVariable.ConcurrentPlaylist.TryRemove(serverID, text))
-            {
-                await Context.Interaction.SendFollowupMessageAsync($"{GlobalVariable.BotNickname}成功刪除歌單 : {text}", display);
-            }
-            else
-            {
-                await Context.Interaction.SendFollowupMessageAsync($"{GlobalVariable.BotNickname}刪除歌單失敗！", display);
-            }
-        }
+            AddRemoveOption.Modify when string.IsNullOrWhiteSpace(url) => "修改歌單功能未填入對應網址！",
+            AddRemoveOption.Modify when store.TryUpdate(guild.Id, text, url, out var oldUrl) => $"修改完成 : {text} : {oldUrl} => {url}！",
+            AddRemoveOption.Modify => "修改歌單功能該歌單不存在！",
 
+            AddRemoveOption.Remove when store.TryRemove(guild.Id, text) => $"{nick}成功刪除歌單 : {text}",
+            AddRemoveOption.Remove => "找不到此歌單，請確認輸入名稱是否一致！",
+
+            _ => throw new ArgumentOutOfRangeException(nameof(addRemove), addRemove, null),
+        };
+
+        await Context.Interaction.SendFollowupMessageAsync(reply, display);
     }
+
+    // ── Download ─────────────────────────────────────────────────
 
     [SlashCommand("下載", "我是爬蟲，我才是爬蟲")]
     public async Task DownloadFileFrom(
         [SlashCommandParameter(Name = "網站")] WebOption web,
         [SlashCommandParameter(Name = "網址")] string url,
         [SlashCommandParameter(Name = "檔案類型")] ExtensionOption extension = ExtensionOption.Video,
-        DisplayOption display = DisplayOption.Display
-        )
+        DisplayOption display = DisplayOption.Display)
     {
-        await Utils.DeferResponse(Context,display);
+        await Utils.DeferResponseAsync(Context, display);
+
+        string? fullFilePath = await MediaProcess.ResolveDownloadVideoAlgorithm(web)(url, extension);
+        if (fullFilePath is null || !File.Exists(fullFilePath))
+        {
+            await Context.Interaction.SendFollowupMessageAsync($"嗚嗚嗚{GlobalVariable.BotNickname}下載失敗！", display);
+            return;
+        }
+
+        string filename = Path.GetFileName(fullFilePath);
+        int limitMB = GlobalVariable.Config.GetUploadLimitMB(Context.Guild?.PremiumTier ?? 0);
+
+        // Previously compared with integer division Length / 1MB, so 10.9MB counted as 10MB and wasn't compressed
+        if (new FileInfo(fullFilePath).Length > limitMB * 1024L * 1024L)
+        {
+            await Context.Interaction.SendFollowupMessageAsync($"偵測到檔案過大（上限 {limitMB}MB），ffmpeg 壓縮中...", display);
+            await SendCompressedAsync(fullFilePath, filename, limitMB, display, "壓縮成功！");
+            return;
+        }
 
         try
         {
-            await Task.Run(async () =>
-            {
-                var downloadAlgorithm = MediaProcess.ResolveDownloadVideoAlgorithm(web);
-                string? fullFilePath = await downloadAlgorithm(url, extension);
-
-                if (fullFilePath == null)
-                {
-                    Console.WriteLine(fullFilePath);
-                    await FollowupAsync($"嗚嗚嗚{GlobalVariable.BotNickname}下載失敗！");
-                }
-                else
-                {
-                    string filename = Path.GetFileName(fullFilePath);
-
-                    if (File.Exists(fullFilePath))
-                    {
-                        try
-                        {
-                            var stream = File.OpenRead(fullFilePath);
-
-                            int tier = Context.Guild.PremiumTier;
-                            int size = 10 ;
-
-                            if (tier >= GlobalVariable.ServerTierUploadFileSize.Count)
-                                size = GlobalVariable.ServerTierUploadFileSize.Last();
-                            else
-                                size = GlobalVariable.ServerTierUploadFileSize[tier];
-
-                            if(stream.Length / (1024L * 1024L) > size) 
-                            {
-                                await Context.Interaction.SendFollowupMessageAsync("偵測到檔案過大，ffmpeg + ffprobe 壓縮中...", display);
-
-                                string Compressed = $"compressed{filename}";
-                                string outputPath = $"{GlobalVariable.DownloadFolderPath}{Compressed}";
-                                FFmpegCompressor.CompressVideo(fullFilePath, outputPath , size);
-
-                                stream = File.OpenRead(outputPath);
-                            }
-
-                            var message = new InteractionMessageProperties()
-                            {
-                                Content = $"{GlobalVariable.BotNickname}下載成功！",
-                                Attachments = new[]
-                                {
-                                    new AttachmentProperties(filename,stream)
-                                },
-                                Flags = display.ToEphemeralFlag()
-                            };
-                            await Context.Interaction.SendFollowupMessageAsync(message);
-                        }
-                        catch (Exception ex) when (ex.Message.Contains("Request entity too large", StringComparison.OrdinalIgnoreCase))
-                        {
-                            await Context.Interaction.SendFollowupMessageAsync("拋出檔案過大例外，ffmpeg + ffprobe 壓縮中...", display);
-
-                            try
-                            {
-                                string Compressed = $"compressed{filename}";
-                                string outputPath = $"{GlobalVariable.DownloadFolderPath}{Compressed}";
-                                FFmpegCompressor.CompressVideo(fullFilePath, outputPath);
-                                var stream = File.OpenRead(outputPath);
-                                var message = new InteractionMessageProperties()
-                                {
-                                    Content = $"壓縮成功！",
-                                    Attachments = new[]
-                                    {
-                                        new AttachmentProperties(filename,stream)
-                                    },
-                                    Flags = display.ToEphemeralFlag()
-                                };
-                                await Context.Interaction.SendFollowupMessageAsync(message);
-                            }
-                            catch (Exception e)
-                            {
-                                Console.WriteLine(e);
-                                await FollowupAsync($"嗚嗚嗚{GlobalVariable.BotNickname}壓縮失敗！");
-                            }
-
-                        }
-                        catch (Exception e)
-                        {
-                            Console.WriteLine(e);
-                            await Context.Interaction.SendFollowupMessageAsync("傳送時發生未知錯誤！", display);
-                        }
-                    }
-                    else
-                    {
-                        await FollowupAsync($"疑 {GlobalVariable.BotNickname}下載完找不到檔案？！");
-                    }
-                }
-
-            });
+            await SendFileAsync(fullFilePath, filename, $"{GlobalVariable.BotNickname}下載成功！", display);
         }
-        catch
+        catch (RestException ex) when (ex.StatusCode == HttpStatusCode.RequestEntityTooLarge)
         {
-            await FollowupAsync($"{GlobalVariable.BotNickname}遇到未知錯誤 ！");
+            Log.Warn($"Upload of {filename} rejected by Discord (413), compressing to 10MB instead");
+            await Context.Interaction.SendFollowupMessageAsync("拋出檔案過大例外，ffmpeg 壓縮中...", display);
+            await SendCompressedAsync(fullFilePath, filename, 10, display, "壓縮成功！");
         }
-
     }
+
+    private async Task SendCompressedAsync(string inputPath, string filename, int targetMB, DisplayOption display, string successMessage)
+    {
+        string outputPath = Path.Combine(GlobalVariable.DownloadFolderPath, $"compressed_{filename}");
+        try
+        {
+            await FFmpegCompressor.CompressAsync(inputPath, outputPath, targetMB);
+            await SendFileAsync(outputPath, filename, successMessage, display);
+        }
+        catch (Exception ex)
+        {
+            Log.Error($"Failed to compress/upload {inputPath}", ex);
+            await Context.Interaction.SendFollowupMessageAsync($"嗚嗚嗚{GlobalVariable.BotNickname}壓縮失敗！（{UserMessages.FromException(ex)}）", display);
+        }
+        finally
+        {
+            TryDelete(outputPath);
+        }
+    }
+
+    /// <summary>Streams from File.OpenRead used to never be disposed, keeping the file locked until GC.</summary>
+    private async Task SendFileAsync(string path, string attachmentName, string content, DisplayOption display)
+    {
+        await using var stream = File.OpenRead(path);
+        await Context.Interaction.SendFollowupMessageAsync(new InteractionMessageProperties
+        {
+            Content = content,
+            Attachments = [new AttachmentProperties(attachmentName, stream)],
+            Flags = display.ToEphemeralFlag(),
+        });
+    }
+
+    private static void TryDelete(string path)
+    {
+        try
+        {
+            if (File.Exists(path)) File.Delete(path);
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"Failed to delete temp file {path}", ex);
+        }
+    }
+
+    // ── Image search ─────────────────────────────────────────────
 
     [SlashCommand("search", "這算法我寫了三天，希望真的很強")]
     public async Task SearchImages(
-          [SlashCommandParameter(AutocompleteProviderType = typeof(ImageAlgorithm.SearchImageAutocomplete))] string query,
-          DisplayOption display = DisplayOption.Display
-        )
+        [SlashCommandParameter(AutocompleteProviderType = typeof(ImageAlgorithm.SearchImageAutocomplete))] string query,
+        DisplayOption display = DisplayOption.Display)
     {
-        await Utils.DeferResponse(Context,display);
+        await Utils.DeferResponseAsync(Context, display);
 
-        var message = new InteractionMessageProperties()
+        string? path = ImageAlgorithm.ResolveImagePath(query);
+        if (path is null)
         {
-            Flags = display.ToEphemeralFlag()
-        };
-
-        string path ;
-
-        if (File.Exists(query))
-            path = query;
-        else
-        {
-            path = ImageAlgorithm.SearchImage(query, maxResultCount: 1, acceptsCachedResult: true)
-                .First()
-                .Path;
+            await Context.Interaction.SendFollowupMessageAsync($"{GlobalVariable.BotNickname}找不到符合的圖片！", display);
+            return;
         }
 
-        var stream = File.OpenRead(path);
-        message.Attachments = new[] { new AttachmentProperties(query, stream) };
-        await Context.Interaction.SendFollowupMessageAsync(message);
+        await SendFileAsync(path, Path.GetFileName(path), "", display);
     }
 }
 
-public class PlaylistAutocompleteHandler : IAutocompleteProvider<AutocompleteInteractionContext> 
+// ── Autocomplete ─────────────────────────────────────────────────
+
+public class PlaylistAutocompleteHandler : IAutocompleteProvider<AutocompleteInteractionContext>
 {
     public ValueTask<IEnumerable<ApplicationCommandOptionChoiceProperties>?> GetChoicesAsync(ApplicationCommandInteractionDataOption option, AutocompleteInteractionContext context)
     {
-        ulong serverId = context.Interaction.Guild.Id;
-        var result = new List<ApplicationCommandOptionChoiceProperties>();
+        if (context.Interaction.Guild is not { } guild)
+            return ValueTask.FromResult<IEnumerable<ApplicationCommandOptionChoiceProperties>?>(Array.Empty<ApplicationCommandOptionChoiceProperties>());
 
-        if (!GlobalVariable.ConcurrentPlaylist.HasGuild(serverId))
-            return ValueTask.FromResult(result.AsEnumerable());
+        string current = option.Value ?? "";
 
-        var current = option.Value;
+        var choices = GlobalVariable.SavedPlaylists.GetAll(guild.Id)
+            .Where(kv => current.Length == 0 || kv.Key.Contains(current, StringComparison.OrdinalIgnoreCase))
+            .Where(kv => kv.Key.Length <= 100 && kv.Value.Length <= 100) // Discord limits choice name/value to 100 chars
+            .Take(25)
+            .Select(kv => new ApplicationCommandOptionChoiceProperties(kv.Key, kv.Value))
+            .ToList();
 
-        foreach (var op in GlobalVariable.ConcurrentPlaylist.GetAll(serverId)
-                        .Where(kvp => (current.Length>0)?kvp.Key.Contains(current, StringComparison.OrdinalIgnoreCase):true)
-                        .Take(25))
-        {
-            result.Add(new(op.Key, op.Value));
-        }
-        
-        return ValueTask.FromResult(result.AsEnumerable());
+        return ValueTask.FromResult<IEnumerable<ApplicationCommandOptionChoiceProperties>?>(choices);
     }
 }
 
 public class SoundEffectsAutocompleteHandler : IAutocompleteProvider<AutocompleteInteractionContext>
 {
-    public ValueTask<IEnumerable<ApplicationCommandOptionChoiceProperties>> GetChoicesAsync(ApplicationCommandInteractionDataOption option, AutocompleteInteractionContext context)
+    private static readonly string[] Extensions = [".mp3", ".mp4"];
+
+    private static IEnumerable<FileInfo> EnumerateSoundEffects()
     {
-        string[] files = new DirectoryInfo(GlobalVariable.SoundEffectsFolderPath)
-            .GetFiles()
-            .Where(file => file.Name.EndsWith(".mp3", StringComparison.OrdinalIgnoreCase) || file.Name.EndsWith(".mp4", StringComparison.OrdinalIgnoreCase))
-            .Select(file => file.Name)
-            .ToArray();
+        var dir = new DirectoryInfo(GlobalVariable.SoundEffectsFolderPath);
+        if (!dir.Exists)
+        {
+            Log.Warn($"Sound effects folder not found: {dir.FullName}");
+            return [];
+        }
+        return dir.EnumerateFiles().Where(f => Extensions.Contains(f.Extension, StringComparer.OrdinalIgnoreCase));
+    }
 
-        var current = option.Value;
+    public static string? FindSoundEffect(string name)
+        => EnumerateSoundEffects()
+            .FirstOrDefault(f => Path.GetFileNameWithoutExtension(f.Name).Equals(name, StringComparison.OrdinalIgnoreCase))
+            ?.FullName;
 
-        var options = files
-                    .Where(filename => filename.Contains(current, StringComparison.OrdinalIgnoreCase))
-                    .Take(25)
-                    .Select(filename => Path.GetFileNameWithoutExtension(filename))
-                    .Select(choice => new ApplicationCommandOptionChoiceProperties(choice, choice));
+    public ValueTask<IEnumerable<ApplicationCommandOptionChoiceProperties>?> GetChoicesAsync(ApplicationCommandInteractionDataOption option, AutocompleteInteractionContext context)
+    {
+        string current = option.Value ?? "";
 
-        return ValueTask.FromResult(options);
+        var choices = EnumerateSoundEffects()
+            .Select(f => Path.GetFileNameWithoutExtension(f.Name))
+            .Where(name => name.Contains(current, StringComparison.OrdinalIgnoreCase) && name.Length <= 100)
+            .Take(25)
+            .Select(name => new ApplicationCommandOptionChoiceProperties(name, name))
+            .ToList();
+
+        return ValueTask.FromResult<IEnumerable<ApplicationCommandOptionChoiceProperties>?>(choices);
     }
 }
 
+// ── Option enums ─────────────────────────────────────────────────
 
 public enum DisplayOption
 {
     [SlashCommandChoice(Name = "顯示指令")]
     Display,
     [SlashCommandChoice(Name = "不顯示指令")]
-    Hide
+    Hide,
 }
+
 public enum WebOption
 {
     [SlashCommandChoice(Name = "Youtube")]
     Youtube,
     [SlashCommandChoice(Name = "Bilibili")]
-    Bilibili
+    Bilibili,
 }
+
 public enum RandomOption
 {
     [SlashCommandChoice(Name = "隨機播放")]
     Random,
     [SlashCommandChoice(Name = "正常播放")]
-    Normal
+    Normal,
 }
+
 public enum AddRemoveOption
 {
     [SlashCommandChoice(Name = "新增")]
@@ -664,7 +458,7 @@ public enum AddRemoveOption
     [SlashCommandChoice(Name = "刪除")]
     Remove,
     [SlashCommandChoice(Name = "修改")]
-    Modify
+    Modify,
 }
 
 public enum ExtensionOption
@@ -672,7 +466,5 @@ public enum ExtensionOption
     [SlashCommandChoice(Name = "Audio")]
     Audio,
     [SlashCommandChoice(Name = "Video")]
-    Video
+    Video,
 }
-
-

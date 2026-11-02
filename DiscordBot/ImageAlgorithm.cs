@@ -1,232 +1,196 @@
 ﻿using NetCord;
 using NetCord.Rest;
 using NetCord.Services.ApplicationCommands;
-using Newtonsoft.Json.Linq;
 using System.Collections.Concurrent;
+using System.Text.Json.Serialization;
 
-namespace DiscordBot
+namespace DiscordBot;
+
+public sealed record ConfidenceResult(float Score, string Path, string DisplayName);
+
+public static class ImageAlgorithm
 {
-    public class ConfidenceResult
+    private const float MainWeight = 1.8f;
+    private const float CharacterWeight = 1.5f;
+    private const float SideWeight = 1.0f;
+    private const float ExactMatchBonus = 1.0f;
+
+    private static readonly TimeSpan CacheExpire = TimeSpan.FromSeconds(5);
+
+    /// <summary>Query picked in autocomplete → image path, so submitting the command gets the same image.</summary>
+    private static readonly ConcurrentDictionary<string, (DateTime At, string Path)> _queryCache = new();
+
+    private sealed record LabelFile
     {
-        public float Score { get; set; }
-        public string Path { get; set; }
-        public string DisplayName { get; set; }
+        [JsonPropertyName("main-tag")] public string[]? MainTags { get; init; }
+        [JsonPropertyName("character-tag")] public string[]? CharacterTags { get; init; }
+        [JsonPropertyName("side-tag")] public string[]? SideTags { get; init; }
     }
-    public class ImageAlgorithm
+
+    private sealed record LabelEntry(string ImagePath, string DisplayName, string[] Main, string[] Character, string[] Side);
+
+    private sealed record LabelIndex(DateTime DirWriteTimeUtc, int FileCount, IReadOnlyList<LabelEntry> Entries);
+
+    private static volatile LabelIndex? _index;
+    private static readonly Lock _indexLock = new();
+
+    public static void StartCacheCleanup()
     {
-        internal class LabelDecoder
+        BackgroundLoop.RunPeriodic("Image search cache cleanup", TimeSpan.FromSeconds(10), TimeSpan.FromSeconds(10), ct =>
         {
-            private const float _mainWeight = 1.8f;
-            private const float _characWeight = 1.5f;
-            private const float _sideWeight = 1.0f;
-            private const float _equalWeight = 1.0f;
-            public static (float, string) ToConfidence(JObject jobj, string query)
+            var now = DateTime.UtcNow;
+            foreach (var (key, value) in _queryCache)
+                if (now - value.At >= CacheExpire)
+                    _queryCache.TryRemove(key, out _);
+            return Task.CompletedTask;
+        });
+    }
+
+    /// <summary>
+    /// Previously every keystroke (autocomplete) re-read all label JSON from disk, spawned one Thread per CPU core
+    /// and pinned them via kernel32; a malformed label (e.g. empty main-tag array) threw on a bare Thread and killed the whole process.
+    /// Now labels are read once and cached (re-read only when the folder changes); broken files are logged and skipped.
+    /// </summary>
+    private static LabelIndex GetIndex()
+    {
+        var dir = new DirectoryInfo(GlobalVariable.LabelsFolderPath);
+        if (!dir.Exists)
+            throw new DirectoryNotFoundException($"Label folder not found: {dir.FullName}");
+
+        var files = dir.GetFiles("*.json");
+        var current = _index;
+        if (current is not null && current.DirWriteTimeUtc == dir.LastWriteTimeUtc && current.FileCount == files.Length)
+            return current;
+
+        lock (_indexLock)
+        {
+            current = _index;
+            if (current is not null && current.DirWriteTimeUtc == dir.LastWriteTimeUtc && current.FileCount == files.Length)
+                return current;
+
+            var entries = new List<LabelEntry>(files.Length);
+            foreach (var file in files)
             {
-                string[] mainTags = jobj.GetValueOrDefault<string[]>("main-tag");
-                string[] characTags = jobj.GetValueOrDefault<string[]>("character-tag");
-                string[] sideTags = jobj.GetValueOrDefault<string[]>("side-tag");
-
-                float SegmentConfidence(string[] tags, float weight)
+                try
                 {
-                    double _sum = 0;
+                    var label = Json.Read<LabelFile>(file.FullName);
+                    string name = Path.GetFileNameWithoutExtension(file.Name);
+                    string imagePath = Path.Combine(GlobalVariable.ImagesFolderPath, $"{name}.jpg");
 
-                    foreach (string tag in tags)
+                    if (!File.Exists(imagePath))
                     {
-                        float _weight = weight;
-                        double _confidence = Utils.HybridScoreSimilarity(query, tag);
-                        if (query == tag) _weight += LabelDecoder._equalWeight;
-                        _sum += _weight * _confidence;
+                        Log.Warn($"Image {imagePath} for label {file.Name} not found, skipping");
+                        continue;
                     }
-                    return (float)_sum;
+
+                    var main = label.MainTags ?? Array.Empty<string>();
+                    entries.Add(new LabelEntry(
+                        imagePath,
+                        main.FirstOrDefault(t => !string.IsNullOrWhiteSpace(t)) ?? name,
+                        main,
+                        label.CharacterTags ?? Array.Empty<string>(),
+                        label.SideTags ?? Array.Empty<string>()));
                 }
-
-                return (SegmentConfidence(mainTags, LabelDecoder._mainWeight)
-                    + SegmentConfidence(characTags, LabelDecoder._characWeight)
-                    + SegmentConfidence(sideTags, LabelDecoder._sideWeight), mainTags[0]);
-            }
-        }
-
-        private class MinHeapComparer : IComparer<ConfidenceResult>
-        {
-            public int Compare(ConfidenceResult x, ConfidenceResult y)
-            {
-                return x.Score.CompareTo(y.Score); // Min-heap based on Score
-            }
-        }
-        private class HeapComparer : IComparer<(ConfidenceResult Item, int UniqueId)>
-        {
-            public int Compare((ConfidenceResult Item, int UniqueId) x, (ConfidenceResult Item, int UniqueId) y)
-            {
-                int cmp = x.Item.Score.CompareTo(y.Item.Score);
-                if (cmp == 0)
-                    return x.UniqueId.CompareTo(y.UniqueId); // Ensure uniqueness
-                return cmp;
-            }
-        }
-
-        private const string _imagesPath = GlobalVariable.ImagesFolderPath;
-        private const string _labelsPath = GlobalVariable.LabelsFolderPath;
-        private static TimeSpan _cacheExpiredTimeSpan = TimeSpan.FromSeconds(5);
-        private static ConcurrentDictionary<string, RefPair<DateTime, string>> _cachedQueryResult = new ConcurrentDictionary<string, RefPair<DateTime, string>>();
-
-        public static List<ConfidenceResult> SearchImage(string query, int maxResultCount = 25, bool acceptsCachedResult = false)
-        {
-            if (maxResultCount == 1 && acceptsCachedResult)
-            {
-                if (ImageAlgorithm._cachedQueryResult.TryGetValue(query, out var result))
-                    return new List<ConfidenceResult>() { new ConfidenceResult { Score = 0f, DisplayName = "", Path = result.Item2 } };
-            }
-
-            var fileLists = ImageAlgorithm.PartitionFiles(new DirectoryInfo(ImageAlgorithm._labelsPath).GetFiles(), Environment.ProcessorCount);
-            List<Thread> threads = new List<Thread>();
-            var heap = new SortedSet<(ConfidenceResult Item, int UniqueId)>(new HeapComparer());
-            object _lock = new object();
-            int globalId = 0;
-
-            for (int i = 0; i < fileLists.Count; i++)
-            {
-                int threadIndex = i;
-                threads.Add(new Thread(() =>
+                catch (Exception ex)
                 {
-                    ThreadAffinityHelper.SetAffinity(threadIndex);
-                    var files = fileLists[threadIndex];
-                    List<ConfidenceResult> results = new List<ConfidenceResult>();
-                    for (int j = 0; j < files.Count; j++)
-                    {
-                        var file = files[j];
-                        string labelPath = file.FullName;
-                        var (confidence, displayName) = LabelDecoder.ToConfidence(Json.Read(labelPath), query);
-                        string imagePath = $"{ImageAlgorithm._imagesPath}{Path.GetFileNameWithoutExtension(labelPath)}.jpg";
-                        var result = new ConfidenceResult
-                        {
-                            Score = confidence,
-                            Path = imagePath,
-                            DisplayName = displayName
-                        };
-                        if (results.Count < maxResultCount)
-                        {
-                            results.Add(result);
-                            if (results.Count == maxResultCount)
-                                results.Sort((r1, r2) => r2.Score.CompareTo(r1.Score)); //desc
-                        }
-                        else
-                        {
-                            if (result.Score > results[^1].Score)
-                            {
-                                int insertIndex = results.Count - 1;
-                                while (insertIndex > 0 && result.Score > results[insertIndex - 1].Score)
-                                {
-                                    results[insertIndex] = results[insertIndex - 1]; // shift right
-                                    insertIndex--;
-                                }
-                                results[insertIndex] = result;
-                            }
-                        }
-                    }
-                    if (results.Count < maxResultCount)
-                        results.Sort((r1, r2) => r2.Score.CompareTo(r1.Score)); //desc
-                                                                                //filling heap
-
-                    lock (_lock)
-                    {
-                        for (int j = 0; j < results.Count; j++)
-                        {
-                            var result = results[j];
-                            if (heap.Count < maxResultCount)
-                            {
-                                int id = Interlocked.Increment(ref globalId);
-                                heap.Add((result, id++));
-                            }
-                            else
-                            {
-                                var min = heap.Min;
-                                if (results[j].Score > min.Item.Score)
-                                {
-                                    heap.Remove(min);
-                                    int id = Interlocked.Increment(ref globalId);
-                                    heap.Add((result, id));
-                                }
-                                else
-                                {
-                                    break;
-                                }
-                            }
-                        }
-
-                    }
-                }));
-                threads.Last().Start();
-            }
-            foreach (var thread in threads)
-            {
-                thread.Join();
-            }
-            return heap
-                .Select(tuple => tuple.Item)
-                .Reverse()
-                .ToList();
-        }
-
-
-        private static List<List<FileInfo>> PartitionFiles(FileInfo[] files, int numPartitions)
-        {
-            var partitions = new List<List<FileInfo>>(numPartitions);
-            for (int i = 0; i < numPartitions; i++)
-                partitions.Add(new List<FileInfo>());
-
-            int totalFiles = files.Length;
-            int baseSize = totalFiles / numPartitions;
-            int extra = totalFiles % numPartitions;
-
-            int index = 0;
-            for (int i = 0; i < numPartitions; i++)
-            {
-                int size = baseSize + (i < extra ? 1 : 0);
-                for (int j = 0; j < size; j++)
-                {
-                    if (index < totalFiles)
-                        partitions[i].Add(files[index++]);
+                    Log.Warn($"Failed to read label {file.FullName}, skipping", ex);
                 }
             }
 
-            return partitions;
+            current = new LabelIndex(dir.LastWriteTimeUtc, files.Length, entries);
+            _index = current;
+            Log.Info($"Image label index built: {entries.Count}/{files.Length}");
+            return current;
+        }
+    }
+
+    private static float Score(LabelEntry entry, string query)
+    {
+        static double Segment(string[] tags, float weight, string query)
+        {
+            double sum = 0;
+            foreach (var tag in tags)
+            {
+                if (string.IsNullOrEmpty(tag)) continue;
+                float w = query == tag ? weight + ExactMatchBonus : weight;
+                sum += w * Utils.HybridScoreSimilarity(query, tag);
+            }
+            return sum;
         }
 
-        public static void LoopCheckExpiredCache()
-        {
-            Timer t = new Timer((e) =>
-            {
-                foreach (var kv in ImageAlgorithm._cachedQueryResult)
-                {
-                    if (DateTime.Now - kv.Value.Item1 >= ImageAlgorithm._cacheExpiredTimeSpan)
-                    {
-                        ImageAlgorithm._cachedQueryResult.TryRemove(kv.Key, out _);
-                    }
-                }
-            }, null, TimeSpan.FromSeconds(10), TimeSpan.FromSeconds(10));
+        return (float)(Segment(entry.Main, MainWeight, query)
+                     + Segment(entry.Character, CharacterWeight, query)
+                     + Segment(entry.Side, SideWeight, query));
+    }
 
-            GlobalVariable.PermanentTimers.Add(t);
+    public static List<ConfidenceResult> SearchImage(string query, int maxResultCount = 25, bool acceptsCachedResult = false)
+    {
+        query ??= "";
+
+        if (maxResultCount == 1 && acceptsCachedResult && _queryCache.TryGetValue(query, out var cached))
+            return [new ConfidenceResult(0f, cached.Path, "")];
+
+        return GetIndex().Entries
+            .AsParallel()
+            .Select(e => new ConfidenceResult(Score(e, query), e.ImagePath, e.DisplayName))
+            .OrderByDescending(r => r.Score)
+            .Take(maxResultCount)
+            .ToList();
+    }
+
+    /// <summary>
+    /// Converts user input into the actual image path to upload.
+    /// ⚠ This used to be <c>if (File.Exists(query)) path = query;</c> — a user typing Data\env.json into /search
+    /// would make the bot upload the config file containing the bot token. Now only files under the image folder are accepted.
+    /// </summary>
+    public static string? ResolveImagePath(string query)
+    {
+        if (IsInsideImagesFolder(query) && File.Exists(query))
+            return query;
+
+        return SearchImage(query, maxResultCount: 1, acceptsCachedResult: true).FirstOrDefault()?.Path;
+    }
+
+    private static bool IsInsideImagesFolder(string path)
+    {
+        try
+        {
+            string root = Path.GetFullPath(GlobalVariable.ImagesFolderPath).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+            return Path.GetFullPath(path).StartsWith(root, StringComparison.OrdinalIgnoreCase);
         }
-
-
-        public class SearchImageAutocomplete : IAutocompleteProvider<AutocompleteInteractionContext>
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
         {
-            public ValueTask<IEnumerable<ApplicationCommandOptionChoiceProperties>> GetChoicesAsync(ApplicationCommandInteractionDataOption option, AutocompleteInteractionContext context)
+            return false;
+        }
+    }
+
+    public sealed class SearchImageAutocomplete : IAutocompleteProvider<AutocompleteInteractionContext>
+    {
+        public ValueTask<IEnumerable<ApplicationCommandOptionChoiceProperties>?> GetChoicesAsync(ApplicationCommandInteractionDataOption option, AutocompleteInteractionContext context)
+        {
+            string current = option.Value ?? "";
+
+            try
             {
-                string current = option.Value;
+                var results = SearchImage(current);
 
-                var results = ImageAlgorithm.SearchImage(current);
+                if (!string.IsNullOrEmpty(current) && results.Count > 0)
+                    _queryCache[current] = (DateTime.UtcNow, results[0].Path);
 
-                var options = results.
-                    Select(result => new ApplicationCommandOptionChoiceProperties(result.DisplayName, result.Path));
+                IEnumerable<ApplicationCommandOptionChoiceProperties> choices = results
+                    .Where(r => r.Path.Length <= 100)
+                    .Select(r => new ApplicationCommandOptionChoiceProperties(Truncate(r.DisplayName, 100), r.Path));
 
-                if (!String.IsNullOrEmpty(current))
-                    ImageAlgorithm._cachedQueryResult.AddOrUpdate(current,
-                        _ => new RefPair<DateTime, string>(DateTime.Now, results.First().Path),
-                       (k, v) => { v.Item1 = DateTime.Now; return v; });
-
-                return ValueTask.FromResult(options);
+                return ValueTask.FromResult<IEnumerable<ApplicationCommandOptionChoiceProperties>?>(choices.ToList());
+            }
+            catch (Exception ex)
+            {
+                Log.Error($"Image search autocomplete failed query={current}", ex);
+                return ValueTask.FromResult<IEnumerable<ApplicationCommandOptionChoiceProperties>?>(Array.Empty<ApplicationCommandOptionChoiceProperties>());
             }
         }
+
+        private static string Truncate(string s, int max)
+            => string.IsNullOrEmpty(s) ? "?" : s.Length <= max ? s : s[..max];
     }
 }

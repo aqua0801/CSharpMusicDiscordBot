@@ -1,101 +1,84 @@
-﻿using AngleSharp.Dom;
-using AngleSharp.Text;
-using NetMQ;
+﻿using NetMQ;
 using NetMQ.Sockets;
 using System.Collections.Concurrent;
-using System.Net.Http;
+using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
+namespace DiscordBot;
 
-namespace DiscordBot
+public sealed class ThinkingResponse
 {
-    public class ThinkingResponse
+    public volatile string? Tokens;
+    public volatile string? Thinking;
+    public volatile string? Response;
+    public volatile bool IsCompleted;
+    public volatile Exception? Error;
+}
+
+/// <summary>Local LLM (ZMQ / OpenAI-compatible HTTP). Not used by any command yet; kept for future use.</summary>
+public static class LanguageModelCore
+{
+    private const string ZmqEndpoint = "tcp://127.0.0.1:5555";
+    private const string HttpEndpoint = "http://127.0.0.1:1234/v1/chat/completions";
+    private const string DefaultModel = "baidu/ernie-4.5-21b-a3b";
+    private const int MaxToken = 1000, MaxPromptLength = MaxToken * 4;
+
+    // Previously a new HttpClient was created per request (sockets aren't released immediately after use)
+    private static readonly HttpClient _http = new() { Timeout = Timeout.InfiniteTimeSpan };
+
+    private sealed record ChatMessage(
+        [property: JsonPropertyName("role")] string Role,
+        [property: JsonPropertyName("content")] string Content);
+
+    private sealed record ChatRequest(
+        [property: JsonPropertyName("model")] string Model,
+        [property: JsonPropertyName("messages")] List<ChatMessage> Messages,
+        [property: JsonPropertyName("temperature")] double Temperature = 0.7,
+        [property: JsonPropertyName("max_tokens")] int MaxTokens = -1,
+        [property: JsonPropertyName("stream")] bool Stream = true);
+
+    private sealed record PromptResponse(string Prompt, string Response)
     {
-        public string Tokens { get; set; }
-        public string Thinking { get; set; }
-        public string Response { get; set; }
+        public int TotalLength => Prompt.Length + Response.Length;
     }
-    public static class LanguageModelCore
+
+    private static readonly ConcurrentDictionary<ulong, List<PromptResponse>> _history = new();
+
+    public static bool CacheChatHistory { get; set; } = false;
+
+    public static string GetModelResponse(string prompt, ulong uid)
     {
-        private static List<Dictionary<string, string>> ToMessages(this List<PromptResponse> prompts)
+        string response = SendByZmq(BuildMergedPrompt(uid, prompt));
+        StorePromptContext(uid, prompt, response);
+        return response;
+    }
+
+    /// <summary>Returns immediately while a background stream fills Tokens; IsCompleted = true when done, Error is set on failure (failures used to be swallowed by fire-and-forget).</summary>
+    public static ThinkingResponse GetModelResponseToken(string prompt, ulong uid, string model = DefaultModel)
+    {
+        var result = new ThinkingResponse();
+
+        _ = Task.Run(async () =>
         {
-            //sys prompt is set 
-            var messages = new List<Dictionary<string, string>>();
-            foreach(var prompt in prompts)
+            try
             {
-                messages.AddRange(prompt.ToContent());
-            }
-            return messages;
-        }
-        private record PromptResponse
-        {
-            public string Prompt { get; set; } = "";
-            public string Response { get; set; } = "";
-
-            public string GetMergedPrompt()
-            {
-                return $"User : {this.Prompt} , Response : {this.Response}";
-            }
-
-            public int GetTotalLength()
-            {
-                return this.GetMergedPrompt().Length;
-            }
-
-            public Dictionary<string, string>[] ToContent()
-                => new Dictionary<string, string>[]
+                var full = new StringBuilder();
+                await foreach (var token in StreamByHttpAsync(BuildRequest(uid, prompt, model)))
                 {
-                    new (){ {"role","user"} , {"content",this.Prompt} },
-                    new (){ {"role", "assistant" } , {"content",this.Response} }
-                };
-        }
-
-        private const string _ip = "127.0.0.1" , _port = "5555" , _protocol = "tcp";
-        private const int _maxToken = 1000 , _maxPromptLength = _maxToken * 4;
-
-        private static ConcurrentDictionary<ulong, List<PromptResponse>> _channelPromptResponseMap = new ConcurrentDictionary<ulong, List<PromptResponse>>();
-
-        public static bool _cacheChatHistory = false;
-
-        public static string GetModelResponse(string prompt , ulong uid)
-        {
-            string response = "hello world !";
-           
-            string mergedPrompt = LanguageModelCore.GetMergedPrompt(uid, prompt);
-
-            response = SendByZmq(mergedPrompt);
-
-            LanguageModelCore.StorePromptContext(uid, prompt, response);
-            
-            return response;
-        }
-
-        public static ThinkingResponse GetModelResponseToken(string prompt, ulong uid)
-        {
-            var result = new ThinkingResponse();
-
-            _ = Task.Run(async () =>
-            {
-                var payload = GetPayload(uid, prompt);
-                string jsonPayload = JsonSerializer.Serialize(payload);
-
-                StringBuilder fullResponse = new StringBuilder();
-
-                await foreach (var token in SendByHttp(jsonPayload))
-                {
-                    fullResponse.Append(token);
-                    result.Tokens = fullResponse.ToString(); 
+                    full.Append(token);
+                    result.Tokens = full.ToString();
                 }
 
-                string response = fullResponse.ToString();
-
-                if (response.Contains("</think>"))
+                string response = full.ToString();
+                int end = response.IndexOf("</think>", StringComparison.Ordinal);
+                if (end >= 0)
                 {
-                    var parts = response.Split("</think>", 2);
-                    result.Thinking = parts[0];
-                    result.Thinking = result.Thinking.ReplaceFirst("<think>","");
-                    result.Response = parts[1];
+                    string thinking = response[..end];
+                    int start = thinking.IndexOf("<think>", StringComparison.Ordinal);
+                    result.Thinking = start >= 0 ? thinking.Remove(start, "<think>".Length) : thinking;
+                    result.Response = response[(end + "</think>".Length)..];
                 }
                 else
                 {
@@ -103,170 +86,112 @@ namespace DiscordBot
                 }
 
                 StorePromptContext(uid, prompt, result.Response);
-            });
-
-            return result; // immediately return reference
-        }
-
-
-
-        private static string SendByZmq(string prompt)
-        {
-            using (var requester = new RequestSocket())
-            {
-                requester.Connect($"{LanguageModelCore._protocol}://{LanguageModelCore._ip}:{LanguageModelCore._port}");
-                requester.SendFrame(prompt);
-                return requester.ReceiveFrameString();
             }
-        }
-
-        private static async IAsyncEnumerable<string> SendByHttp(string payloadstring)
-        {
-            using HttpClient httpClient = new HttpClient();
-            string url = "http://127.0.0.1:1234/v1/chat/completions";
-
-            using var request = new HttpRequestMessage(HttpMethod.Post, url);
-            request.Headers.Add("Accept", "application/json");
-            request.Content = new StringContent(payloadstring, Encoding.UTF8, "application/json");
-
-            using var response = await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
-            response.EnsureSuccessStatusCode();
-
-            using var stream = await response.Content.ReadAsStreamAsync();
-            using var reader = new StreamReader(stream);
-
-            while (!reader.EndOfStream)
+            catch (Exception ex)
             {
-                var line = await reader.ReadLineAsync();
-                if (string.IsNullOrWhiteSpace(line)) continue;
-
-                if (line.StartsWith("data:"))
-                {
-                    var jsonDataStr = line.Substring("data:".Length).Trim();
-
-                    if (jsonDataStr == "[DONE]")
-                        yield break;
-
-                    using var doc = JsonDocument.Parse(jsonDataStr);
-                    var root = doc.RootElement;
-
-                    if (root.TryGetProperty("choices", out var choices))
-                    {
-                        var delta = choices[0].GetProperty("delta");
-                        if (delta.TryGetProperty("content", out var content))
-                        {
-                            yield return content.GetString()!;
-                        }
-                    }
-                }
+                Log.Error("LLM streaming request failed", ex);
+                result.Error = ex;
             }
-        }
-        private static object GetPayload(ulong uid, string newPrompt, string model = "qwen3-4b-thinking")
-        {
-            model = "baidu/ernie-4.5-21b-a3b";
-            // If no history caching, just send the new prompt as a user message
-            if (!LanguageModelCore._cacheChatHistory)
+            finally
             {
-                var messages = new List<Dictionary<string, string>>
-                {
-                    new() { ["role"] = "user", ["content"] = newPrompt }
-                };
-
-                return new
-                {
-                    model,
-                    messages,
-                    temperature = 0.7,
-                    max_tokens = -1,
-                    stream = true
-                };
+                result.IsCompleted = true;
             }
+        });
 
-            if (!LanguageModelCore._channelPromptResponseMap.TryGetValue(uid, out var prompts))
-            {
-                // No history yet, same as above
-                var messages = new List<Dictionary<string, string>>
-                {
-                    new() { ["role"] = "user", ["content"] = newPrompt }
-                };
-
-                return new
-                {
-                    model,
-                    messages,
-                    temperature = 0.7,
-                    max_tokens = -1,
-                    stream = true
-                };
-            }
-
-            // Convert history to messages
-            var historyMessages = prompts.ToMessages(); // Using your extension method
-
-            // Add the new prompt as latest user message
-            historyMessages.Add(new Dictionary<string, string> { ["role"] = "user", ["content"] = newPrompt });
-
-            return new
-            {
-                model,
-                messages = historyMessages,
-                temperature = 0.7,
-                max_tokens = -1,
-                stream = true
-            };
-        }
-
-        private static string GetMergedPrompt(ulong uid , string newPrompt)
-        {
-            if (!LanguageModelCore._cacheChatHistory)
-                return newPrompt;
-            if (LanguageModelCore._channelPromptResponseMap.TryGetValue(uid, out var prompts))
-            {
-                StringBuilder promptBuilder = new StringBuilder();
-
-                promptBuilder.AppendLine("Chat History : ");
-
-                foreach (var prompt in prompts)
-                    promptBuilder.AppendLine(prompt.GetMergedPrompt());
-
-                promptBuilder.AppendLine("New prompt : ");
-                promptBuilder.AppendLine(newPrompt);
-
-                return promptBuilder.ToString();
-            }
-            else
-                return newPrompt;
-        }
-
-        private static void StorePromptContext(ulong uid , string prompt , string response)
-        {
-            if (!LanguageModelCore._cacheChatHistory)
-                return;
-            lock (LanguageModelCore._channelPromptResponseMap)
-            {
-                if (!LanguageModelCore._channelPromptResponseMap.ContainsKey(uid))
-                    LanguageModelCore._channelPromptResponseMap[uid] = new List<PromptResponse>();
-
-                LanguageModelCore._channelPromptResponseMap[uid].Add
-                    (
-                        new PromptResponse { Prompt = prompt, Response = response }
-                    );
-
-                int totalLength = LanguageModelCore._channelPromptResponseMap[uid].Sum(prompt => prompt.GetTotalLength());
-
-                while(totalLength > LanguageModelCore._maxPromptLength)
-                {
-                    totalLength -= LanguageModelCore._channelPromptResponseMap[uid].First().GetTotalLength();
-                    LanguageModelCore._channelPromptResponseMap [uid].RemoveAt (0);
-                }
-            }
-        }
-
-        public static void ClearChatHistory(ulong uid)
-        {
-            LanguageModelCore._channelPromptResponseMap.TryRemove(uid,out var _);
-        }
-
-
+        return result;
     }
+
+    private static string SendByZmq(string prompt)
+    {
+        using var requester = new RequestSocket();
+        requester.Connect(ZmqEndpoint);
+        requester.SendFrame(prompt);
+        return requester.ReceiveFrameString();
+    }
+
+    private static async IAsyncEnumerable<string> StreamByHttpAsync(ChatRequest payload)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Post, HttpEndpoint)
+        {
+            Content = JsonContent.Create(payload),
+        };
+        request.Headers.Add("Accept", "application/json");
+
+        using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
+        response.EnsureSuccessStatusCode();
+
+        using var reader = new StreamReader(await response.Content.ReadAsStreamAsync());
+
+        while (await reader.ReadLineAsync() is { } line)
+        {
+            if (!line.StartsWith("data:", StringComparison.Ordinal)) continue;
+
+            var data = line["data:".Length..].Trim();
+            if (data == "[DONE]") yield break;
+
+            using var doc = JsonDocument.Parse(data);
+            if (doc.RootElement.TryGetProperty("choices", out var choices)
+                && choices.GetArrayLength() > 0
+                && choices[0].TryGetProperty("delta", out var delta)
+                && delta.TryGetProperty("content", out var content)
+                && content.GetString() is { } text)
+            {
+                yield return text;
+            }
+        }
+    }
+
+    private static ChatRequest BuildRequest(ulong uid, string newPrompt, string model)
+    {
+        var messages = new List<ChatMessage>();
+
+        if (CacheChatHistory && _history.TryGetValue(uid, out var prompts))
+        {
+            lock (prompts)
+            {
+                foreach (var p in prompts)
+                {
+                    messages.Add(new ChatMessage("user", p.Prompt));
+                    messages.Add(new ChatMessage("assistant", p.Response));
+                }
+            }
+        }
+
+        messages.Add(new ChatMessage("user", newPrompt));
+        return new ChatRequest(model, messages);
+    }
+
+    private static string BuildMergedPrompt(ulong uid, string newPrompt)
+    {
+        if (!CacheChatHistory || !_history.TryGetValue(uid, out var prompts))
+            return newPrompt;
+
+        var sb = new StringBuilder().AppendLine("Chat History : ");
+        lock (prompts)
+        {
+            foreach (var p in prompts)
+                sb.AppendLine($"User : {p.Prompt} , Response : {p.Response}");
+        }
+        return sb.AppendLine("New prompt : ").AppendLine(newPrompt).ToString();
+    }
+
+    private static void StorePromptContext(ulong uid, string prompt, string response)
+    {
+        if (!CacheChatHistory) return;
+
+        var prompts = _history.GetOrAdd(uid, _ => new List<PromptResponse>());
+        lock (prompts)
+        {
+            prompts.Add(new PromptResponse(prompt, response));
+
+            int total = prompts.Sum(p => p.TotalLength);
+            while (total > MaxPromptLength && prompts.Count > 0)
+            {
+                total -= prompts[0].TotalLength;
+                prompts.RemoveAt(0);
+            }
+        }
+    }
+
+    public static void ClearChatHistory(ulong uid) => _history.TryRemove(uid, out _);
 }
